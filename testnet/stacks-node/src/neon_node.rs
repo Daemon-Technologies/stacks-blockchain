@@ -1161,7 +1161,7 @@ impl InitializedNeonNode {
         println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
         if !v["is_miner"].as_bool().unwrap() { 
-            //!self.is_miner {
+            // !self.is_miner {
             // node is a follower, don't try to issue a tenure
             return true;
         }
@@ -1204,8 +1204,8 @@ impl InitializedNeonNode {
         println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
         if !v["is_miner"].as_bool().unwrap() { 
-            //!self.is_miner {
-             // node is a follower, don't try to process my own tenure.
+            // !self.is_miner {
+            // node is a follower, don't try to process my own tenure.
             return true;
         }
 

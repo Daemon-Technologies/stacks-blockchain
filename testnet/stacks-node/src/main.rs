@@ -60,6 +60,7 @@ fn main() {
     let v: serde_json::Value = serde_json::from_reader(f).unwrap();
     println!("burn_fee_cap: {:?}", v["burn_fee_cap"].as_i64().unwrap());
     println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_i64().unwrap());
+    println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
 
     panic::set_hook(Box::new(|_| {
