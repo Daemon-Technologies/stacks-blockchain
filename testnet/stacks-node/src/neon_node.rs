@@ -61,6 +61,8 @@ use stacks::chainstate::coordinator::{get_next_recipients, OnChainRewardSetProvi
 
 use stacks::monitoring::{increment_stx_blocks_mined_counter, update_active_miners_count_gauge};
 
+use std::fs::File;
+
 pub const RELAYER_MAX_BUFFER: usize = 100;
 
 struct AssembledAnchorBlock {
@@ -239,6 +241,7 @@ fn rotate_vrf_and_register(
     btc_controller.submit_operation(op, &mut one_off_signer, 1)
 }
 
+// Gavin Needs!
 /// Constructs and returns a LeaderBlockCommitOp out of the provided params
 fn inner_generate_block_commit_op(
     sender: BurnchainSigner,
@@ -1598,9 +1601,18 @@ impl InitializedNeonNode {
                 return None;
             }
         };
+        let f = File::open("./burninfo.json").unwrap();
+        println!("文件打开成功：{:?}", f);
+        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+        println!("burn_fee_cap: {:?}", v["burn_fee_cap"].as_u64().unwrap());
+        println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());
 
-        let sunset_burn = burnchain.expected_sunset_burn(burn_block.block_height + 1, burn_fee_cap);
-        let rest_commit = burn_fee_cap - sunset_burn;
+        let mut burn_fee_cap_from_file = v["burn_fee_cap"].as_u64().unwrap();
+        let sunset_burn = burnchain.expected_sunset_burn(burn_block.block_height + 1, burn_fee_cap_from_file);
+        let rest_commit = burn_fee_cap_from_file - sunset_burn;
+
+        //let sunset_burn = burnchain.expected_sunset_burn(burn_block.block_height + 1, burn_fee_cap);
+        //let rest_commit = burn_fee_cap - sunset_burn;
 
         let commit_outs = if burn_block.block_height + 1 < burnchain.pox_constants.sunset_end
             && !burnchain.is_in_prepare_phase(burn_block.block_height + 1)
@@ -1610,6 +1622,7 @@ impl InitializedNeonNode {
             vec![StacksAddress::burn_address(config.is_mainnet())]
         };
 
+        // Gavin 1
         // let's commit
         let op = inner_generate_block_commit_op(
             keychain.get_burnchain_signer(),
@@ -1632,7 +1645,7 @@ impl InitializedNeonNode {
             &parent_consensus_hash,
             &anchored_block.header.parent_block
         );
-
+        // Gavin 2
         let res = bitcoin_controller.submit_operation(op, &mut op_signer, attempt);
         if !res {
             warn!("Failed to submit Bitcoin transaction");

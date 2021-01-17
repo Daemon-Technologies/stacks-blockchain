@@ -1,0 +1,4 @@
+{
+    "burn_fee_cap": 200000,
+    "sats_per_bytes": 100
+ }

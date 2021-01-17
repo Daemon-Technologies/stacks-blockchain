@@ -48,6 +48,9 @@ use stacks::util::sleep_ms;
 
 use stacks::monitoring::{increment_btc_blocks_received_counter, increment_btc_ops_sent_counter};
 
+use std::fs::File;
+
+
 #[cfg(test)]
 use stacks::{burnchains::BurnchainHeaderHash, chainstate::burn::Opcodes};
 
@@ -530,8 +533,18 @@ impl BitcoinRegtestController {
     ) -> Option<Transaction> {
         let public_key = signer.get_public_key();
 
+        let f = File::open("./burninfo.json").unwrap();
+        println!("文件打开成功：{:?}", f);
+        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+        println!("burn_fee_cap: {:?}", v["burn_fee_cap"].as_u64().unwrap());
+        println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());
+
+        //let btc_miner_fee = self.config.burnchain.leader_key_tx_estimated_size
+        //    * self.config.burnchain.satoshis_per_byte;
+
         let btc_miner_fee = self.config.burnchain.leader_key_tx_estimated_size
-            * self.config.burnchain.satoshis_per_byte;
+            * v["sats_per_bytes"].as_u64().unwrap();
+
         let budget_for_outputs = DUST_UTXO_LIMIT;
         let total_required = btc_miner_fee + budget_for_outputs;
 
@@ -754,8 +767,18 @@ impl BitcoinRegtestController {
             return None;
         }
 
+        let f = File::open("./burninfo.json").unwrap();
+        println!("文件打开成功：{:?}", f);
+        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+        println!("burn_fee_cap_from_file: {:?}. payload.burn_fee: {:?}", v["burn_fee_cap"].as_u64().unwrap(), payload.burn_fee);
+        println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());
+
+        //let btc_miner_fee = self.config.burnchain.block_commit_tx_estimated_size
+        //    * self.config.burnchain.satoshis_per_byte;
+        //350 * sats per bytes
         let btc_miner_fee = self.config.burnchain.block_commit_tx_estimated_size
-            * self.config.burnchain.satoshis_per_byte;
+            * v["sats_per_bytes"].as_u64().unwrap();
+        //350 * sats per bytes
 
         let rbf_fee = (attempt.saturating_sub(1) * self.last_tx_len * self.min_relay_fee) / 1000;
         let budget_for_outputs = value_per_transfer * number_of_transfers + sunset_fee;

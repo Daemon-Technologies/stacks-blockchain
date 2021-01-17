@@ -51,7 +51,17 @@ use std::process;
 
 use backtrace::Backtrace;
 
+use std::fs::File;
+
 fn main() {
+
+    let f = File::open("./burninfo.json").unwrap();
+    println!("文件打开成功：{:?}", f);
+    let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+    println!("burn_fee_cap: {:?}", v["burn_fee_cap"].as_i64().unwrap());
+    println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_i64().unwrap());
+
+
     panic::set_hook(Box::new(|_| {
         eprintln!("Process abort due to thread panic");
         let bt = Backtrace::new();
