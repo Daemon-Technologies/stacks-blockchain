@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -24,6 +24,9 @@
 extern crate blockstack_lib;
 extern crate rusqlite;
 
+#[macro_use(o, slog_log, slog_trace, slog_debug, slog_info, slog_warn, slog_error)]
+extern crate slog;
+
 use blockstack_lib::burnchains::db::BurnchainBlockData;
 use blockstack_lib::*;
 
@@ -38,6 +41,7 @@ use blockstack_lib::util::log;
 use blockstack_lib::burnchains::BurnchainHeaderHash;
 use blockstack_lib::chainstate::burn::BlockHeaderHash;
 use blockstack_lib::chainstate::burn::ConsensusHash;
+use blockstack_lib::chainstate::stacks::db::ChainStateBootData;
 use blockstack_lib::chainstate::stacks::index::marf::MarfConnection;
 use blockstack_lib::chainstate::stacks::index::marf::MARF;
 use blockstack_lib::chainstate::stacks::StacksBlockHeader;
@@ -54,8 +58,6 @@ use rusqlite::Connection;
 use rusqlite::OpenFlags;
 
 fn main() {
-    log::set_loglevel(log::LOG_INFO).unwrap();
-
     let mut argv: Vec<String> = env::args().collect();
     if argv.len() < 2 {
         eprintln!("Usage: {} command [args...]", argv[0]);
@@ -259,7 +261,7 @@ fn main() {
                 "SELECT value FROM __fork_storage WHERE value_hash = ?1",
                 args,
                 |row| {
-                    let s: String = row.get(0);
+                    let s: String = row.get_unwrap(0);
                     Ok(s)
                 },
             );
@@ -320,7 +322,7 @@ fn main() {
             println!("{}, {}", cur_burn, cur_tip);
             let (next_burn, next_tip) = match
                 conn.query_row("SELECT parent_burn_header_hash, parent_anchored_block_hash FROM staging_blocks WHERE anchored_block_hash = ? and burn_header_hash = ?",
-                               &[&cur_tip as &dyn rusqlite::types::ToSql, &cur_burn], |row| (row.get(0), row.get(1))) {
+                               &[&cur_tip as &dyn rusqlite::types::ToSql, &cur_burn], |row| Ok((row.get_unwrap(0), row.get_unwrap(1)))) {
                     Ok(x) => x,
                     Err(e) => {
                         match e {
@@ -408,7 +410,7 @@ fn main() {
         let old_sortition_db = SortitionDB::open(old_sort_path, true).unwrap();
 
         // initial argon balances -- see testnet/stacks-node/conf/argon-follower-conf.toml
-        let initial_argon_balances = vec![
+        let initial_balances = vec![
             (
                 StacksAddress::from_string("STB44HYPYAT2BB2QE513NSP81HTMYWBJP02HPGK6")
                     .unwrap()
@@ -443,33 +445,45 @@ fn main() {
             read_count: 5_0_000,
             runtime: 1_00_000_000,
         };
-
-        let burnchain = Burnchain::new(&burnchain_db_path, "bitcoin", "regtest").unwrap();
+        let burnchain = Burnchain::regtest(&burnchain_db_path);
+        let first_burnchain_block_height = burnchain.first_block_height;
+        let first_burnchain_block_hash = burnchain.first_block_hash;
         let indexer: BitcoinIndexer = burnchain.make_indexer().unwrap();
         let (mut new_sortition_db, _) = burnchain.connect_db(&indexer, true).unwrap();
 
         let old_burnchaindb = BurnchainDB::connect(
             &old_burnchaindb_path,
-            burnchain.first_block_height,
-            &burnchain.first_block_hash,
-            FIRST_BURNCHAIN_BLOCK_TIMESTAMP,
+            first_burnchain_block_height,
+            &first_burnchain_block_hash,
+            BITCOIN_REGTEST_FIRST_BLOCK_TIMESTAMP.into(),
             true,
         )
         .unwrap();
+
+        let mut boot_data = ChainStateBootData {
+            initial_balances,
+            post_flight_callback: None,
+            first_burnchain_block_hash,
+            first_burnchain_block_height: first_burnchain_block_height as u32,
+            first_burnchain_block_timestamp: 0,
+            get_bulk_initial_lockups: None,
+            get_bulk_initial_balances: None,
+            get_bulk_initial_namespaces: None,
+            get_bulk_initial_names: None,
+        };
 
         let (mut new_chainstate, _) = StacksChainState::open_and_exec(
             false,
             0x80000000,
             new_chainstate_path,
-            Some(initial_argon_balances),
-            |_| {},
+            Some(&mut boot_data),
             argon_block_limit,
         )
         .unwrap();
 
         let all_snapshots = old_sortition_db.get_all_snapshots().unwrap();
         let all_stacks_blocks =
-            StacksChainState::get_all_staging_block_headers(&old_chainstate.blocks_db).unwrap();
+            StacksChainState::get_all_staging_block_headers(&old_chainstate.db()).unwrap();
 
         // order block hashes by arrival index
         let mut stacks_blocks_arrival_indexes = vec![];
@@ -530,15 +544,8 @@ fn main() {
             loop {
                 // simulate the p2p refreshing itself
                 // update p2p's read-only view of the unconfirmed state
-                let (canonical_burn_tip, canonical_block_tip) =
-                    SortitionDB::get_canonical_stacks_chain_tip_hash(p2p_new_sortition_db.conn())
-                        .expect("Failed to read canonical stacks chain tip");
-                let canonical_tip = StacksBlockHeader::make_index_block_hash(
-                    &canonical_burn_tip,
-                    &canonical_block_tip,
-                );
                 p2p_chainstate
-                    .refresh_unconfirmed_state_readonly(canonical_tip)
+                    .refresh_unconfirmed_state(&p2p_new_sortition_db.index_conn())
                     .expect("Failed to open unconfirmed Clarity state");
 
                 sleep_ms(100);
@@ -670,8 +677,6 @@ fn main() {
                     }
                 }
             }
-
-            Relayer::setup_unconfirmed_state(&mut new_chainstate, &mut new_sortition_db).unwrap();
         }
 
         eprintln!(
@@ -686,27 +691,4 @@ fn main() {
         eprintln!("Usage: {} blockchain network working_dir", argv[0]);
         process::exit(1);
     }
-
-    let blockchain = &argv[1];
-    let network = &argv[2];
-    let working_dir = &argv[3];
-
-    match (blockchain.as_str(), network.as_str()) {
-        ("bitcoin", "mainnet") | ("bitcoin", "testnet") | ("bitcoin", "regtest") => {
-            let block_height_res = core::sync_burnchain_bitcoin(&working_dir, &network);
-            match block_height_res {
-                Err(e) => {
-                    eprintln!("Failed to sync {} {}: {:?}", blockchain, network, e);
-                    process::exit(1);
-                }
-                Ok(height) => {
-                    println!("Synchronized state to block {}", height);
-                }
-            }
-        }
-        (_, _) => {
-            eprintln!("Unrecognized blockchain and/or network");
-            process::exit(1);
-        }
-    };
 }

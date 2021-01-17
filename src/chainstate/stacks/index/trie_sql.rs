@@ -161,6 +161,8 @@ pub fn write_trie_blob<T: MarfTrieId>(
         .insert(args)?
         .try_into()
         .expect("EXHAUSTION: MARF cannot track more than 2**31 - 1 blocks");
+
+    debug!("Wrote block trie {} to rowid {}", block_hash, block_id);
     Ok(block_id)
 }
 
@@ -176,6 +178,11 @@ pub fn write_trie_blob_to_mined<T: MarfTrieId>(
         .insert(args)?
         .try_into()
         .expect("EXHAUSTION: MARF cannot track more than 2**31 - 1 blocks");
+
+    debug!(
+        "Wrote mined block trie {} to rowid {}",
+        block_hash, block_id
+    );
     Ok(block_id)
 }
 
@@ -196,6 +203,11 @@ pub fn write_trie_blob_to_unconfirmed<T: MarfTrieId>(
         .insert(args)?
         .try_into()
         .expect("EXHAUSTION: MARF cannot track more than 2**31 - 1 blocks");
+
+    debug!(
+        "Wrote unconfirmed block trie {} to rowid {}",
+        block_hash, block_id
+    );
     Ok(block_id)
 }
 
@@ -216,7 +228,7 @@ pub fn read_all_block_hashes_and_roots<T: MarfTrieId>(
 ) -> Result<Vec<(TrieHash, T)>, Error> {
     let mut s = conn.prepare("SELECT block_hash, data FROM marf_data WHERE unconfirmed = 0")?;
     let rows = s.query_and_then(NO_PARAMS, |row| {
-        let block_hash: T = row.get("block_hash");
+        let block_hash: T = row.get_unwrap("block_hash");
         let data = row
             .get_raw("data")
             .as_blob()
@@ -331,7 +343,7 @@ pub fn tx_lock_bhh_for_extension<T: MarfTrieId>(
             .query_row(
                 "SELECT 1 FROM marf_data WHERE block_hash = ? LIMIT 1",
                 &[bhh],
-                |_row| (),
+                |_row| Ok(()),
             )
             .optional()?
             .is_some();
@@ -344,7 +356,7 @@ pub fn tx_lock_bhh_for_extension<T: MarfTrieId>(
         .query_row(
             "SELECT 1 FROM block_extension_locks WHERE block_hash = ? LIMIT 1",
             &[bhh],
-            |_row| (),
+            |_row| Ok(()),
         )
         .optional()?
         .is_some();
@@ -390,6 +402,7 @@ pub fn drop_unconfirmed_trie<T: MarfTrieId>(conn: &Connection, bhh: &T) -> Resul
         "DELETE FROM marf_data WHERE block_hash = ? AND unconfirmed = 1",
         &[bhh],
     )?;
+    debug!("Dropped unconfirmed trie sqlite blob {}", bhh);
     Ok(())
 }
 

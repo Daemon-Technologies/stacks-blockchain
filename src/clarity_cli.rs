@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -26,7 +26,6 @@ use blockstack_lib::{clarity, util::log};
 use std::env;
 
 fn main() {
-    log::set_loglevel(log::LOG_DEBUG).unwrap();
     let argv: Vec<String> = env::args().collect();
 
     clarity::invoke_command(&argv[0], &argv[1..]);

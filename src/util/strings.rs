@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -46,8 +46,24 @@ use util::retry::BoundReader;
 
 /// printable-ASCII-only string, but encodable.
 /// Note that it cannot be longer than ARRAY_MAX_LEN (4.1 billion bytes)
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct StacksString(Vec<u8>);
+
+pub struct VecDisplay<'a, T: fmt::Display>(pub &'a [T]);
+
+impl<'a, T: fmt::Display> fmt::Display for VecDisplay<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[")?;
+        for (ix, val) in self.0.iter().enumerate() {
+            if ix == 0 {
+                write!(f, "{}", val)?;
+            } else {
+                write!(f, ", {}", val)?;
+            }
+        }
+        write!(f, "]")
+    }
+}
 
 impl fmt::Display for StacksString {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

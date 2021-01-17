@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -174,6 +174,7 @@ pub struct BitcoinTxInput {
     pub keys: Vec<BitcoinPublicKey>,
     pub num_required: usize,
     pub in_type: BitcoinInputType,
+    pub tx_ref: (Txid, u32),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -182,6 +183,8 @@ pub struct BitcoinTransaction {
     pub vtxindex: u32,
     pub opcode: u8,
     pub data: Vec<u8>,
+    /// how much BTC was sent to the data output
+    pub data_amt: u64,
     pub inputs: Vec<BitcoinTxInput>,
     pub outputs: Vec<BitcoinTxOutput>,
 }

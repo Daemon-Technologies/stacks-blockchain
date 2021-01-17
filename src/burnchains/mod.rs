@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -20,12 +20,12 @@ pub mod burnchain;
 pub mod db;
 pub mod indexer;
 
+use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::default::Default;
 use std::error;
 use std::fmt;
 use std::io;
-
-use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use self::bitcoin::Error as btc_error;
@@ -38,9 +38,6 @@ use self::bitcoin::indexer::{
     BITCOIN_MAINNET as BITCOIN_NETWORK_ID_MAINNET, BITCOIN_MAINNET_NAME,
     BITCOIN_REGTEST as BITCOIN_NETWORK_ID_REGTEST, BITCOIN_REGTEST_NAME,
     BITCOIN_TESTNET as BITCOIN_NETWORK_ID_TESTNET, BITCOIN_TESTNET_NAME,
-    FIRST_BLOCK_MAINNET as BITCOIN_FIRST_BLOCK_MAINNET,
-    FIRST_BLOCK_REGTEST as BITCOIN_FIRST_BLOCK_REGTEST,
-    FIRST_BLOCK_TESTNET as BITCOIN_FIRST_BLOCK_TESTNET,
 };
 
 use core::*;
@@ -51,6 +48,7 @@ use chainstate::stacks::StacksPublicKey;
 
 use chainstate::burn::db::sortdb::PoxId;
 use chainstate::burn::distribution::BurnSamplePoint;
+use chainstate::burn::operations::leader_block_commit::OUTPUTS_PER_COMMIT;
 use chainstate::burn::operations::BlockstackOperationType;
 use chainstate::burn::operations::Error as op_error;
 use chainstate::burn::operations::LeaderKeyRegisterOp;
@@ -99,22 +97,36 @@ pub struct BurnchainParameters {
     chain_name: String,
     network_name: String,
     network_id: u32,
-    first_block_height: u64,
-    first_block_hash: BurnchainHeaderHash,
     stable_confirmations: u32,
     consensus_hash_lifetime: u32,
+    pub first_block_height: u64,
+    pub first_block_hash: BurnchainHeaderHash,
+    pub first_block_timestamp: u32,
+    pub initial_reward_start_block: u64,
 }
 
 impl BurnchainParameters {
+    pub fn from_params(chain: &str, network: &str) -> Option<BurnchainParameters> {
+        match (chain, network) {
+            ("bitcoin", "mainnet") => Some(BurnchainParameters::bitcoin_mainnet()),
+            ("bitcoin", "testnet") => Some(BurnchainParameters::bitcoin_testnet()),
+            ("bitcoin", "regtest") => Some(BurnchainParameters::bitcoin_regtest()),
+            _ => None,
+        }
+    }
+
     pub fn bitcoin_mainnet() -> BurnchainParameters {
         BurnchainParameters {
             chain_name: "bitcoin".to_string(),
             network_name: BITCOIN_MAINNET_NAME.to_string(),
             network_id: BITCOIN_NETWORK_ID_MAINNET,
-            first_block_height: BITCOIN_FIRST_BLOCK_MAINNET,
-            first_block_hash: FIRST_BURNCHAIN_BLOCK_HASH.clone(),
             stable_confirmations: 7,
             consensus_hash_lifetime: 24,
+            first_block_height: BITCOIN_MAINNET_FIRST_BLOCK_HEIGHT,
+            first_block_hash: BurnchainHeaderHash::from_hex(BITCOIN_MAINNET_FIRST_BLOCK_HASH)
+                .unwrap(),
+            first_block_timestamp: BITCOIN_MAINNET_FIRST_BLOCK_TIMESTAMP,
+            initial_reward_start_block: BITCOIN_MAINNET_INITIAL_REWARD_START_BLOCK,
         }
     }
 
@@ -123,10 +135,13 @@ impl BurnchainParameters {
             chain_name: "bitcoin".to_string(),
             network_name: BITCOIN_TESTNET_NAME.to_string(),
             network_id: BITCOIN_NETWORK_ID_TESTNET,
-            first_block_height: BITCOIN_FIRST_BLOCK_TESTNET,
-            first_block_hash: FIRST_BURNCHAIN_BLOCK_HASH_TESTNET.clone(),
             stable_confirmations: 7,
             consensus_hash_lifetime: 24,
+            first_block_height: BITCOIN_TESTNET_FIRST_BLOCK_HEIGHT,
+            first_block_hash: BurnchainHeaderHash::from_hex(BITCOIN_TESTNET_FIRST_BLOCK_HASH)
+                .unwrap(),
+            first_block_timestamp: BITCOIN_TESTNET_FIRST_BLOCK_TIMESTAMP,
+            initial_reward_start_block: BITCOIN_TESTNET_FIRST_BLOCK_HEIGHT - 10_000,
         }
     }
 
@@ -135,10 +150,13 @@ impl BurnchainParameters {
             chain_name: "bitcoin".to_string(),
             network_name: BITCOIN_REGTEST_NAME.to_string(),
             network_id: BITCOIN_NETWORK_ID_REGTEST,
-            first_block_height: BITCOIN_FIRST_BLOCK_REGTEST,
-            first_block_hash: FIRST_BURNCHAIN_BLOCK_HASH_REGTEST.clone(),
             stable_confirmations: 1,
             consensus_hash_lifetime: 24,
+            first_block_height: BITCOIN_REGTEST_FIRST_BLOCK_HEIGHT,
+            first_block_hash: BurnchainHeaderHash::from_hex(BITCOIN_REGTEST_FIRST_BLOCK_HASH)
+                .unwrap(),
+            first_block_timestamp: BITCOIN_REGTEST_FIRST_BLOCK_TIMESTAMP,
+            initial_reward_start_block: BITCOIN_REGTEST_FIRST_BLOCK_HEIGHT,
         }
     }
 
@@ -228,6 +246,23 @@ impl BurnchainTransaction {
         }
     }
 
+    pub fn get_signer(&self, input: usize) -> Option<BurnchainSigner> {
+        match *self {
+            BurnchainTransaction::Bitcoin(ref btc) => btc
+                .inputs
+                .get(input)
+                .map(|ref i| BurnchainSigner::from_bitcoin_input(i)),
+        }
+    }
+
+    pub fn get_input_tx_ref(&self, input: usize) -> Option<&(Txid, u32)> {
+        match self {
+            BurnchainTransaction::Bitcoin(ref btc) => {
+                btc.inputs.get(input).map(|txin| &txin.tx_ref)
+            }
+        }
+    }
+
     pub fn get_recipients(&self) -> Vec<BurnchainRecipient> {
         match *self {
             BurnchainTransaction::Bitcoin(ref btc) => btc
@@ -235,6 +270,12 @@ impl BurnchainTransaction {
                 .iter()
                 .map(|ref o| BurnchainRecipient::from_bitcoin_output(o))
                 .collect(),
+        }
+    }
+
+    pub fn get_burn_amount(&self) -> u64 {
+        match *self {
+            BurnchainTransaction::Bitcoin(ref btc) => btc.data_amt,
         }
     }
 }
@@ -265,7 +306,9 @@ pub struct Burnchain {
     pub stable_confirmations: u32,
     pub first_block_height: u64,
     pub first_block_hash: BurnchainHeaderHash,
+    pub first_block_timestamp: u32,
     pub pox_constants: PoxConstants,
+    pub initial_reward_start_block: u64,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -283,6 +326,10 @@ pub struct PoxConstants {
     /// percentage of liquid STX that must participate for PoX
     ///  to occur
     pub pox_participation_threshold_pct: u64,
+    /// last+1 block height of sunset phase
+    pub sunset_end: u64,
+    /// first block height of sunset phase
+    pub sunset_start: u64,
     _shadow: PhantomData<()>,
 }
 
@@ -293,8 +340,12 @@ impl PoxConstants {
         anchor_threshold: u32,
         pox_rejection_fraction: u64,
         pox_participation_threshold_pct: u64,
+        sunset_start: u64,
+        sunset_end: u64,
     ) -> PoxConstants {
         assert!(anchor_threshold > (prepare_length / 2));
+        assert!(prepare_length < reward_cycle_length);
+        assert!(sunset_start <= sunset_end);
 
         PoxConstants {
             reward_cycle_length,
@@ -302,16 +353,19 @@ impl PoxConstants {
             anchor_threshold,
             pox_rejection_fraction,
             pox_participation_threshold_pct,
+            sunset_start,
+            sunset_end,
             _shadow: PhantomData,
         }
     }
     #[cfg(test)]
     pub fn test_default() -> PoxConstants {
-        PoxConstants::new(10, 5, 3, 25, 5)
+        // 20 reward slots; 10 prepare-phase slots
+        PoxConstants::new(10, 5, 3, 25, 5, 5000, 10000)
     }
 
     pub fn reward_slots(&self) -> u32 {
-        self.reward_cycle_length
+        (self.reward_cycle_length - self.prepare_length) * (OUTPUTS_PER_COMMIT as u32)
     }
 
     /// is participating_ustx enough to engage in PoX in the next reward cycle?
@@ -325,11 +379,39 @@ impl PoxConstants {
     }
 
     pub fn mainnet_default() -> PoxConstants {
-        PoxConstants::new(1000, 240, 192, 25, 5)
+        PoxConstants::new(
+            POX_REWARD_CYCLE_LENGTH,
+            POX_PREPARE_WINDOW_LENGTH,
+            80,
+            25,
+            5,
+            BITCOIN_MAINNET_FIRST_BLOCK_HEIGHT + POX_SUNSET_START,
+            BITCOIN_MAINNET_FIRST_BLOCK_HEIGHT + POX_SUNSET_END,
+        )
     }
 
     pub fn testnet_default() -> PoxConstants {
-        PoxConstants::new(120, 30, 20, 3333333333333333, 5) // total liquid supply is 40000000000000000 µSTX
+        PoxConstants::new(
+            50, // 40 reward slots; 10 prepare-phase slots
+            10,
+            6,
+            3333333333333333,
+            1,
+            BITCOIN_TESTNET_FIRST_BLOCK_HEIGHT + POX_SUNSET_START,
+            BITCOIN_TESTNET_FIRST_BLOCK_HEIGHT + POX_SUNSET_END,
+        ) // total liquid supply is 40000000000000000 µSTX
+    }
+
+    pub fn regtest_default() -> PoxConstants {
+        PoxConstants::new(
+            5,
+            1,
+            1,
+            3333333333333333,
+            1,
+            BITCOIN_REGTEST_FIRST_BLOCK_HEIGHT + POX_SUNSET_START,
+            BITCOIN_REGTEST_FIRST_BLOCK_HEIGHT + POX_SUNSET_END,
+        )
     }
 }
 
@@ -612,6 +694,8 @@ pub mod test {
         pub block_commits: Vec<LeaderBlockCommitOp>,
         pub id: usize,
         pub nonce: u64,
+        pub spent_at_nonce: HashMap<u64, u128>, // how much uSTX this miner paid in a given tx's nonce
+        pub test_with_tx_fees: bool, // set to true to make certain helper methods attach a pre-defined tx fee
     }
 
     pub struct TestMinerFactory {
@@ -637,6 +721,8 @@ pub mod test {
                 block_commits: vec![],
                 id: 0,
                 nonce: 0,
+                spent_at_nonce: HashMap::new(),
+                test_with_tx_fees: true,
             }
         }
 
@@ -695,7 +781,7 @@ pub mod test {
                 let h = Sha256Sum::from_data(&buf[..]);
                 StacksPrivateKey::from_slice(h.as_bytes()).unwrap()
             } else {
-                // next key is the hash of teh last
+                // next key is the hash of the last
                 let h = Sha256Sum::from_data(
                     &self.microblock_privks[self.microblock_privks.len() - 1].to_bytes(),
                 );
@@ -884,12 +970,13 @@ pub mod test {
             fork_snapshot: Option<&BlockSnapshot>,
             parent_block_snapshot: Option<&BlockSnapshot>,
         ) -> LeaderBlockCommitOp {
+            let input = (Txid([0; 32]), 0);
             let pubks = miner
                 .privks
                 .iter()
                 .map(|ref pk| StacksPublicKey::from_private(pk))
                 .collect();
-            let input = BurnchainSigner {
+            let apparent_sender = BurnchainSigner {
                 hash_mode: miner.hash_mode.clone(),
                 num_sigs: miner.num_sigs as usize,
                 public_keys: pubks,
@@ -932,6 +1019,7 @@ pub mod test {
                         leader_key.vtxindex as u16,
                         burn_fee,
                         &input,
+                        &apparent_sender,
                     );
                     txop
                 }
@@ -944,12 +1032,13 @@ pub mod test {
                         leader_key,
                         burn_fee,
                         &input,
+                        &apparent_sender,
                     );
                     txop
                 }
             };
 
-            txop.block_height = self.block_height;
+            txop.set_burn_height(self.block_height);
             txop.vtxindex = self.txs.len() as u32;
             txop.burn_header_hash = BurnchainHeaderHash::from_test_data(
                 txop.block_height,
@@ -1030,6 +1119,7 @@ pub mod test {
                     None,
                     PoxId::stubbed(),
                     None,
+                    0,
                 )
                 .unwrap();
             sortition_db_handle.commit().unwrap();
@@ -1194,7 +1284,7 @@ pub mod test {
     impl TestBurnchainNode {
         pub fn new() -> TestBurnchainNode {
             let first_block_height = 100;
-            let first_block_hash = FIRST_BURNCHAIN_BLOCK_HASH.clone();
+            let first_block_hash = BurnchainHeaderHash([0u8; 32]);
             let db = SortitionDB::connect_test(first_block_height, &first_block_hash).unwrap();
             TestBurnchainNode {
                 sortdb: db,

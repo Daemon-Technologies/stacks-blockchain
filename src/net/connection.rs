@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -151,7 +151,7 @@ impl<P: ProtocolFamily> NetworkReplyHandle<P> {
     }
 
     /// Try to flush and receive.
-    /// Only call this once all sender data is bufferred up.
+    /// Only call this once all sender data is buffered up.
     /// Consumed the handle if it succeeds in both emptying the message buffer and getting a message.
     /// Returns itself if it still has data to flush, or if it's still waiting for a reply.
     pub fn try_send_recv(mut self) -> Result<P::Message, Result<NetworkReplyHandle<P>, net_error>> {
@@ -162,7 +162,7 @@ impl<P: ProtocolFamily> NetworkReplyHandle<P> {
                         // flushed all data; try to receive a reply.
                         self.try_recv()
                     } else {
-                        // still have bufferred data
+                        // still have buffered data
                         Err(Ok(self))
                     }
                 }
@@ -333,6 +333,8 @@ pub struct ConnectionOptions {
     pub soft_max_neighbors_per_host: u64,
     pub soft_max_neighbors_per_org: u64,
     pub soft_max_clients_per_host: u64,
+    pub max_neighbors_of_neighbor: u64,
+    pub max_http_clients: u64,
     pub neighbor_request_timeout: u64,
     pub num_initial_walks: u64,
     pub walk_retry_count: u64,
@@ -348,6 +350,7 @@ pub struct ConnectionOptions {
     pub pingback_timeout: u64,
     pub dns_timeout: u128,
     pub max_inflight_blocks: u64,
+    pub max_inflight_attachments: u64,
     pub read_only_call_limit: ExecutionCost,
     pub maximum_call_argument_size: u32,
     pub max_block_push_bandwidth: u64,
@@ -358,6 +361,13 @@ pub struct ConnectionOptions {
     pub public_ip_request_timeout: u64,
     pub public_ip_timeout: u64,
     pub public_ip_max_retries: u64,
+    pub max_block_push: u64,
+    pub max_microblock_push: u64,
+    pub antientropy_retry: u64,
+    pub max_buffered_blocks_available: u64,
+    pub max_buffered_microblocks_available: u64,
+    pub max_buffered_blocks: u64,
+    pub max_buffered_microblocks: u64,
 
     // fault injection
     pub disable_neighbor_walk: bool,
@@ -371,6 +381,8 @@ pub struct ConnectionOptions {
     pub disable_pingbacks: bool,
     pub disable_inbound_walks: bool,
     pub disable_natpunch: bool,
+    pub disable_inbound_handshakes: bool,
+    pub force_disconnect_interval: Option<u64>,
 }
 
 impl std::default::Default for ConnectionOptions {
@@ -393,6 +405,8 @@ impl std::default::Default for ConnectionOptions {
             soft_max_neighbors_per_host: 10, // how many outbound connections we can have per IP address, before we start pruning them
             soft_max_neighbors_per_org: 10, // how many outbound connections we can have per AS-owning organization, before we start pruning them
             soft_max_clients_per_host: 10, // how many inbound connections we can have per IP address, before we start pruning them,
+            max_neighbors_of_neighbor: 10,
+            max_http_clients: 10,
             neighbor_request_timeout: NEIGHBOR_REQUEST_TIMEOUT, // how long to wait for a neighbor request
             num_initial_walks: NUM_INITIAL_WALKS,
             walk_retry_count: WALK_RETRY_COUNT,
@@ -406,14 +420,15 @@ impl std::default::Default for ConnectionOptions {
             inv_sync_interval: INV_SYNC_INTERVAL, // how often to synchronize block inventories
             download_interval: BLOCK_DOWNLOAD_INTERVAL, // how often to scan for blocks to download
             pingback_timeout: 60,
-            dns_timeout: 15_000,    // DNS timeout, in millis
-            max_inflight_blocks: 6, // number of parallel block downloads
+            dns_timeout: 15_000,         // DNS timeout, in millis
+            max_inflight_blocks: 6,      // number of parallel block downloads
+            max_inflight_attachments: 6, // number of parallel attachments downloads
             read_only_call_limit: ExecutionCost {
                 write_length: 0,
                 write_count: 0,
                 read_length: 100000,
-                read_count: 10,
-                runtime: 10000000,
+                read_count: 30,
+                runtime: 1_000_000_000,
             },
             maximum_call_argument_size: 20 * BOUND_VALUE_SERIALIZATION_HEX,
             max_block_push_bandwidth: 0, // infinite upload bandwidth allowed
@@ -424,6 +439,13 @@ impl std::default::Default for ConnectionOptions {
             public_ip_request_timeout: 60, // how often we can attempt to look up our public IP address
             public_ip_timeout: 3600,       // re-learn the public IP ever hour, if it's not given
             public_ip_max_retries: 3, // maximum number of retries before self-throttling for $public_ip_timeout
+            max_block_push: 10, // maximum number of blocksData messages to push out via our anti-entropy protocol
+            max_microblock_push: 10, // maximum number of microblocks messages to push out via our anti-entrop protocol
+            antientropy_retry: 3600 * 24, // retry pushing data only once every day
+            max_buffered_blocks_available: 1,
+            max_buffered_microblocks_available: 1,
+            max_buffered_blocks: 1,
+            max_buffered_microblocks: 10,
 
             // no faults on by default
             disable_neighbor_walk: false,
@@ -437,6 +459,8 @@ impl std::default::Default for ConnectionOptions {
             disable_pingbacks: false,
             disable_inbound_walks: false,
             disable_natpunch: false,
+            disable_inbound_handshakes: false,
+            force_disconnect_interval: None,
         }
     }
 }
@@ -557,9 +581,9 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
     /// buffer up bytes for a message
     fn buffer_message_bytes(&mut self, bytes: &[u8], message_len_opt: Option<usize>) -> usize {
         let message_len = message_len_opt.unwrap_or(MAX_MESSAGE_LEN as usize);
-        let bufferred_so_far = self.buf[self.message_ptr..].len();
+        let buffered_so_far = self.buf[self.message_ptr..].len();
         let mut to_consume = bytes.len();
-        let total_avail: u128 = (bufferred_so_far as u128) + (to_consume as u128); // can't overflow
+        let total_avail: u128 = (buffered_so_far as u128) + (to_consume as u128); // can't overflow
         if total_avail > message_len as u128 {
             trace!(
                 "self.message_ptr = {}, message_len = {}, to_consume = {}",
@@ -568,8 +592,8 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
                 to_consume
             );
 
-            to_consume = if message_len > bufferred_so_far {
-                message_len - bufferred_so_far
+            to_consume = if message_len > buffered_so_far {
+                message_len - buffered_so_far
             } else {
                 // can happen if we receive so much data when parsing the preamble that we've
                 // also already received the message, and part of the next preamble (or more).
@@ -641,7 +665,7 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
         }
     }
 
-    /// Try to consume bufferred data to form a message, where we don't know how long the message
+    /// Try to consume buffered data to form a message, where we don't know how long the message
     /// is.  Stream it into the protocol, and see what the protocol spits out.
     fn consume_payload_unknown_length(
         &mut self,
@@ -687,7 +711,7 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
             None => {
                 // not enough data
                 test_debug!(
-                    "Got preamble {:?}, but no streamed message (bufferred {} bytes)",
+                    "Got preamble {:?}, but no streamed message (buffered {} bytes)",
                     &preamble,
                     bytes_consumed
                 );
@@ -697,7 +721,7 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
         Ok(ret)
     }
 
-    /// Try to consume bufferred data to form a message.
+    /// Try to consume buffered data to form a message.
     /// This method may consume enough data to form multiple messages; in that case, this will
     /// return the first such message.  Call this repeatedly with an empty bytes array to get all
     /// messages.
@@ -807,7 +831,7 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
                     self.preamble = preamble_opt;
                     if self.preamble.is_some() {
                         test_debug!(
-                            "Consumed bufferred message preamble in {} bytes",
+                            "Consumed buffered message preamble in {} bytes",
                             _bytes_consumed
                         );
                     }
@@ -821,7 +845,7 @@ impl<P: ProtocolFamily> ConnectionInbox<P> {
                         match message_opt {
                             Some(message) => {
                                 // queue up
-                                test_debug!("Consumed bufferred message '{}' (request {}) from {} input buffer bytes", message.get_message_name(), message.request_id(), _bytes_consumed);
+                                test_debug!("Consumed buffered message '{}' (request {}) from {} input buffer bytes", message.get_message_name(), message.request_id(), _bytes_consumed);
                                 self.inbox.push_back(message);
                                 consumed_message = true;
                             }
@@ -1797,7 +1821,7 @@ mod test {
         // 4 messages queued
         assert_eq!(conn.outbox.outbox.len(), 4);
 
-        // 1 message serialized and bufferred out, and it should be our ping.
+        // 1 message serialized and buffered out, and it should be our ping.
         assert_eq!(
             StacksMessage::consensus_deserialize(&mut io::Cursor::new(
                 &write_buf.get_ref().to_vec()

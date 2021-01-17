@@ -64,7 +64,7 @@ _For building on Windows, follow the rustup installer instructions at https://ru
 From there, you can clone this repository:
 
 ```bash
-git clone https://github.com/blockstack/stacks-blockchain.git
+git clone --depth=1 https://github.com/blockstack/stacks-blockchain.git
 
 cd stacks-blockchain
 ```
@@ -99,16 +99,16 @@ cargo run --bin blockstack-cli generate-sk --testnet
 We will interact with the following simple contract `kv-store`. In our examples, we will assume this contract is saved to `./kv-store.clar`:
 
 ```scheme
-(define-map store ((key (string-ascii 32))) ((value (string-ascii 32))))
+(define-map store { key: (string-ascii 32) } { value: (string-ascii 32) })
 
 (define-public (get-value (key (string-ascii 32)))
-    (match (map-get? store {key: key})
+    (match (map-get? store { key: key })
         entry (ok (get value entry))
         (err 0)))
 
 (define-public (set-value (key (string-ascii 32)) (value (string-ascii 32)))
     (begin
-        (map-set store {key: key} {value: value})
+        (map-set store { key: key } { value: value })
         (ok true)))
 ```
 
@@ -148,7 +148,7 @@ cargo testnet start --config=./testnet/stacks-node/Stacks.toml
 `Stacks.toml` is a configuration file that you can use for setting genesis balances or configuring Event observers.  You can grant an address an initial account balance by adding the following entries:
 
 ```
-[[mstx_balance]]
+[[ustx_balance]]
 address = "ST2VHM28V9E5QCRD6C73215KAPSBKQGPWTEE5CMQT"
 amount = 100000000
 ```

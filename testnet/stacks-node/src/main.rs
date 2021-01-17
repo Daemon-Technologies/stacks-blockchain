@@ -11,6 +11,10 @@ extern crate serde_json;
 #[macro_use]
 extern crate stacks;
 
+#[allow(unused_imports)]
+#[macro_use(o, slog_log, slog_trace, slog_debug, slog_info, slog_warn, slog_error)]
+extern crate slog;
+
 pub use stacks::util;
 
 pub mod monitoring;
@@ -18,6 +22,7 @@ pub mod monitoring;
 pub mod burnchains;
 pub mod config;
 pub mod event_dispatcher;
+pub mod genesis_data;
 pub mod keychain;
 pub mod neon_node;
 pub mod node;
@@ -72,6 +77,8 @@ fn main() {
     let mut args = Arguments::from_env();
     let subcommand = args.subcommand().unwrap().unwrap_or_default();
 
+    info!("{}", version());
+
     let config_file = match subcommand.as_str() {
         "mocknet" => {
             args.finish().unwrap();
@@ -97,20 +104,18 @@ fn main() {
             args.finish().unwrap();
             ConfigFile::xenon()
         }
+        "mainnet" => {
+            args.finish().unwrap();
+            ConfigFile::mainnet()
+        }
         "start" => {
             let config_path: String = args.value_from_str("--config").unwrap();
             args.finish().unwrap();
-            println!("==> {}", config_path);
+            info!("Loading config at path {}", config_path);
             ConfigFile::from_path(&config_path)
         }
         "version" => {
-            println!(
-                "{}",
-                &stacks::version_string(
-                    option_env!("CARGO_PKG_NAME").unwrap_or("stacks-node"),
-                    option_env!("CARGO_PKG_VERSION").unwrap_or("0.0.0.0")
-                )
-            );
+            println!("{}", &version());
             return;
         }
         _ => {
@@ -134,15 +139,24 @@ fn main() {
             return;
         }
     } else if conf.burnchain.mode == "neon"
-        || conf.burnchain.mode == "argon"
-        || conf.burnchain.mode == "krypton"
         || conf.burnchain.mode == "xenon"
+        || conf.burnchain.mode == "krypton"
+        || conf.burnchain.mode == "mainnet"
     {
         let mut run_loop = neon::RunLoop::new(conf);
         run_loop.start(num_round, None);
     } else {
         println!("Burnchain mode '{}' not supported", conf.burnchain.mode);
     }
+}
+
+fn version() -> String {
+    stacks::version_string(
+        "stacks-node",
+        option_env!("STACKS_NODE_VERSION")
+            .or(option_env!("CARGO_PKG_VERSION"))
+            .unwrap_or("0.0.0.0"),
+    )
 }
 
 fn print_help() {
@@ -158,6 +172,8 @@ stacks-node <SUBCOMMAND>
 
 SUBCOMMANDS:
 
+mainnet\t\tStart a node that will join and stream blocks from the public mainnet.
+
 mocknet\t\tStart a node based on a fast local setup emulating a burnchain. Ideal for smart contract development. 
 
 helium\t\tStart a node based on a local setup relying on a local instance of bitcoind.
@@ -169,10 +185,6 @@ helium\t\tStart a node based on a local setup relying on a local instance of bit
 \t\t  rpcuser=helium
 \t\t  rpcpassword=helium
 
-argon\t\tStart a node that will join and stream blocks from the public argon testnet, powered by Blockstack (Proof of Burn).
-
-krypton\t\tStart a node that will join and stream blocks from the public krypton testnet, powered by Blockstack via (Proof of Transfer).
-
 xenon\t\tStart a node that will join and stream blocks from the public xenon testnet, decentralized.
 
 start\t\tStart a node with a config of your own. Can be used for joining a network, starting new chain, etc.
@@ -181,7 +193,7 @@ start\t\tStart a node with a config of your own. Can be used for joining a netwo
 \t\tExample:
 \t\t  stacks-node start --config=/path/to/config.toml
 
-version\t\tDisplay informations about the current version and our release cycle.
+version\t\tDisplay information about the current version and our release cycle.
 
 help\t\tDisplay this help.
 

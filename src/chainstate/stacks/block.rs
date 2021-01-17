@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -142,12 +142,7 @@ impl StacksMessageCodec for StacksBlockHeader {
 
 impl StacksBlockHeader {
     pub fn pubkey_hash(pubk: &StacksPublicKey) -> Hash160 {
-        let pubkey_buf = StacksPublicKeyBuffer::from_public_key(pubk);
-        let mut bytes = vec![];
-        pubkey_buf
-            .consensus_serialize(&mut bytes)
-            .expect("BUG: failed to serialize public key to a vec");
-        Hash160::from_data(&bytes[..])
+        Hash160::from_node_public_key(pubk)
     }
 
     pub fn genesis_block_header() -> StacksBlockHeader {
@@ -717,6 +712,11 @@ impl StacksMicroblockHeader {
 
         let mut pubk =
             StacksPublicKey::recover_to_pubkey(&digest_bits, &self.signature).map_err(|_ve| {
+                test_debug!(
+                    "Failed to verify signature: failed to recover public key from {:?}: {:?}",
+                    &self.signature,
+                    &_ve
+                );
                 net_error::VerifyingError(
                     "Failed to verify signature: failed to recover public key".to_string(),
                 )
@@ -730,8 +730,12 @@ impl StacksMicroblockHeader {
         let pubkh = self.check_recover_pubkey()?;
 
         if pubkh != *pubk_hash {
+            test_debug!(
+                "Failed to verify signature: public key did not recover to hash {}",
+                &pubkh.to_hex()
+            );
             return Err(net_error::VerifyingError(format!(
-                "Failed to verify signature: public key {} did not recover to expected hash",
+                "Failed to verify signature: public key did not recover to expected hash {}",
                 pubkh.to_hex()
             )));
         }
@@ -927,6 +931,7 @@ impl StacksMicroblock {
 #[cfg(test)]
 mod test {
     use super::*;
+    use chainstate::burn::operations::leader_block_commit::BURN_BLOCK_MINED_AT_MODULUS;
     use chainstate::stacks::test::*;
     use chainstate::stacks::*;
     use net::codec::test::*;
@@ -943,7 +948,6 @@ mod test {
     use burnchains::BurnchainBlockHeader;
     use burnchains::BurnchainSigner;
     use burnchains::Txid;
-    use burnchains::BLOCKSTACK_MAGIC_MAINNET;
 
     use burnchains::bitcoin::BitcoinNetworkType;
 
@@ -1281,7 +1285,7 @@ mod test {
         };
 
         let pubk = StacksPublicKey::from_private(&privk);
-        let pubkh = Hash160::from_data(&pubk.to_bytes());
+        let pubkh = Hash160::from_node_public_key(&pubk);
 
         mblock_header.sign(&privk).unwrap();
         mblock_header.verify(&pubkh).unwrap();
@@ -1366,6 +1370,7 @@ mod test {
         };
 
         let mut block_commit = LeaderBlockCommitOp {
+            sunset_burn: 0,
             block_header_hash: header.block_hash(),
             new_seed: VRFSeed::from_proof(&header.proof),
             parent_block_ptr: 0,
@@ -1376,7 +1381,8 @@ mod test {
             commit_outs: vec![],
 
             burn_fee: 12345,
-            input: BurnchainSigner {
+            input: (Txid([0; 32]), 0),
+            apparent_sender: BurnchainSigner {
                 public_keys: vec![StacksPublicKey::from_hex(
                     "02d8015134d9db8178ac93acbc43170a2f20febba5087a5b0437058765ad5133d0",
                 )
@@ -1392,6 +1398,8 @@ mod test {
             .unwrap(),
             vtxindex: 444,
             block_height: 125,
+            burn_parent_modulus: (124 % BURN_BLOCK_MINED_AT_MODULUS) as u8,
+
             burn_header_hash: BurnchainHeaderHash([0xff; 32]),
         };
 

@@ -31,6 +31,7 @@ use std::sync::mpsc::SendError;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::TryRecvError;
 
+use net::atlas::AtlasDB;
 use net::connection::*;
 use net::db::*;
 use net::http::*;
@@ -52,6 +53,7 @@ use util::get_epoch_time_secs;
 
 use core::mempool::*;
 
+#[derive(Debug)]
 pub struct HttpPeer {
     pub network_id: u32,
     pub chain_view: BurnchainView,
@@ -189,20 +191,23 @@ impl HttpPeer {
         outbound_url: Option<&UrlString>,
     ) -> Result<(), net_error> {
         if outbound_url.is_none()
-            && (self.peers.len() as u64) + 1 > self.connection_opts.num_clients
+            && (self.peers.len() as u64) + 1 > self.connection_opts.max_http_clients
         {
             // inbound
-            debug!("HTTP: too many inbound peers total");
+            debug!(
+                "HTTP: too many inbound peers total (max is {})",
+                self.connection_opts.max_http_clients
+            );
             return Err(net_error::TooManyPeers);
         }
 
         // how many other conversations are connected?
         let num_inbound = self.count_inbound_ip_addrs(peer_addr);
-        if num_inbound > self.connection_opts.max_clients_per_host {
+        if num_inbound > self.connection_opts.max_http_clients {
             // too many
             debug!(
-                "HTTP: too many inbound peers from {:?} ({} > {})",
-                peer_addr, num_inbound, self.connection_opts.max_clients_per_host
+                "HTTP: too many inbound HTTP peers from {:?} ({} > {})",
+                peer_addr, num_inbound, self.connection_opts.max_http_clients
             );
             return Err(net_error::TooManyPeers);
         }
@@ -210,7 +215,7 @@ impl HttpPeer {
         debug!(
             "HTTP: Have {} peers now (max {}) inbound={}, including {} from host of {:?}",
             self.peers.len(),
-            self.connection_opts.num_clients,
+            self.connection_opts.max_http_clients,
             outbound_url.is_none(),
             num_inbound,
             peer_addr
@@ -432,6 +437,7 @@ impl HttpPeer {
         peers: &PeerMap,
         sortdb: &SortitionDB,
         peerdb: &PeerDB,
+        atlasdb: &mut AtlasDB,
         chainstate: &mut StacksChainState,
         mempool: &mut MemPoolDB,
         event_id: usize,
@@ -470,7 +476,7 @@ impl HttpPeer {
                                     Ok(_) => {}
                                     Err(e) => {
                                         debug!(
-                                            "Failed to flush HTP 400 to socket {:?}: {:?}",
+                                            "Failed to flush HTTP 400 to socket {:?}: {:?}",
                                             &client_sock, &e
                                         );
                                         convo_dead = true;
@@ -506,6 +512,7 @@ impl HttpPeer {
             peers,
             sortdb,
             peerdb,
+            atlasdb,
             chainstate,
             mempool,
             handler_args,
@@ -524,7 +531,7 @@ impl HttpPeer {
         if !convo_dead {
             // (continue) sending out data in this conversation, if the conversation is still
             // ongoing
-            match convo.send(client_sock, chainstate) {
+            match HttpPeer::saturate_http_socket(client_sock, convo, chainstate) {
                 Ok(_) => {}
                 Err(e) => {
                     debug!(
@@ -584,6 +591,7 @@ impl HttpPeer {
         peers: &PeerMap,
         sortdb: &SortitionDB,
         peerdb: &PeerDB,
+        atlasdb: &mut AtlasDB,
         chainstate: &mut StacksChainState,
         mempool: &mut MemPoolDB,
         handler_args: &RPCHandlerArgs,
@@ -614,6 +622,7 @@ impl HttpPeer {
                         peers,
                         sortdb,
                         peerdb,
+                        atlasdb,
                         chainstate,
                         mempool,
                         *event_id,
@@ -681,6 +690,7 @@ impl HttpPeer {
         p2p_peers: &PeerMap,
         sortdb: &SortitionDB,
         peerdb: &PeerDB,
+        atlasdb: &mut AtlasDB,
         chainstate: &mut StacksChainState,
         mempool: &mut MemPoolDB,
         mut poll_state: NetworkPollState,
@@ -701,6 +711,7 @@ impl HttpPeer {
             p2p_peers,
             sortdb,
             peerdb,
+            atlasdb,
             chainstate,
             mempool,
             handler_args,
@@ -1208,7 +1219,7 @@ mod test {
                 );
 
                 tx_contract.chain_id = chainstate.config().chain_id;
-                tx_contract.set_fee_rate(0);
+                tx_contract.set_tx_fee(0);
 
                 let mut signer = StacksTransactionSigner::new(&tx_contract);
                 signer.sign_origin(&privk_origin).unwrap();
@@ -1221,6 +1232,7 @@ mod test {
                         51061,
                     )),
                     signed_contract_tx,
+                    None,
                 );
                 request.metadata_mut().keep_alive = false;
 

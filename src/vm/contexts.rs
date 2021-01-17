@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,13 +17,20 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt;
+use std::mem::replace;
 
 use vm::ast;
 use vm::ast::ContractAST;
 use vm::callables::{DefinedFunction, FunctionIdentifier};
 use vm::contracts::Contract;
-use vm::costs::{cost_functions, CostErrors, CostTracker, ExecutionCost, LimitedCostTracker};
-use vm::database::ClarityDatabase;
+use vm::costs::{
+    cost_functions, runtime_cost, ClarityCostFunctionReference, CostErrors, CostTracker,
+    ExecutionCost, LimitedCostTracker,
+};
+use vm::database::{
+    ClarityDatabase, DataMapMetadata, DataVariableMetadata, FungibleTokenMetadata,
+    NonFungibleTokenMetadata,
+};
 use vm::errors::{CheckErrors, InterpreterError, InterpreterResult as Result, RuntimeErrorType};
 use vm::functions::handle_contract_call_special_cases;
 use vm::representations::{ClarityName, ContractName, SymbolicExpression};
@@ -36,10 +43,14 @@ use vm::types::{
 use vm::{eval, is_reserved};
 
 use chainstate::burn::{BlockHeaderHash, VRFSeed};
+use chainstate::stacks::db::StacksChainState;
 use chainstate::stacks::events::*;
+use chainstate::stacks::Error as ChainstateError;
 use chainstate::stacks::StacksBlockId;
+use chainstate::stacks::StacksMicroblockHeader;
 
 use serde::Serialize;
+use vm::costs::cost_functions::ClarityCostFunction;
 
 pub const MAX_CONTEXT_DEPTH: u16 = 256;
 
@@ -97,9 +108,10 @@ pub struct GlobalContext<'a> {
     pub database: ClarityDatabase<'a>,
     read_only: Vec<bool>,
     pub cost_track: LimitedCostTracker,
+    pub mainnet: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ContractContext {
     pub contract_identifier: QualifiedContractIdentifier,
     pub variables: HashMap<ClarityName, Value>,
@@ -109,6 +121,11 @@ pub struct ContractContext {
     // tracks the names of NFTs, FTs, Maps, and Data Vars.
     //  used for ensuring that they never are defined twice.
     pub persisted_names: HashSet<ClarityName>,
+    // track metadata for contract defined storage
+    pub meta_data_map: HashMap<ClarityName, DataMapMetadata>,
+    pub meta_data_var: HashMap<ClarityName, DataVariableMetadata>,
+    pub meta_nft: HashMap<ClarityName, NonFungibleTokenMetadata>,
+    pub meta_ft: HashMap<ClarityName, FungibleTokenMetadata>,
     pub data_size: u64,
 }
 
@@ -123,6 +140,7 @@ pub struct LocalContext<'a> {
 pub struct CallStack {
     stack: Vec<FunctionIdentifier>,
     set: HashSet<FunctionIdentifier>,
+    apply_depth: usize,
 }
 
 pub type StackTrace = Vec<FunctionIdentifier>;
@@ -424,20 +442,42 @@ impl EventBatch {
 }
 
 impl<'a> OwnedEnvironment<'a> {
+    #[cfg(test)]
     pub fn new(database: ClarityDatabase<'a>) -> OwnedEnvironment<'a> {
         OwnedEnvironment {
-            context: GlobalContext::new(database, LimitedCostTracker::new_max_limit()),
+            context: GlobalContext::new(false, database, LimitedCostTracker::new_free()),
+            default_contract: ContractContext::new(QualifiedContractIdentifier::transient()),
+            call_stack: CallStack::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_max_limit(mut database: ClarityDatabase<'a>) -> OwnedEnvironment<'a> {
+        let cost_track = LimitedCostTracker::new_max_limit(&mut database)
+            .expect("FAIL: problem instantiating cost tracking");
+
+        OwnedEnvironment {
+            context: GlobalContext::new(false, database, cost_track),
+            default_contract: ContractContext::new(QualifiedContractIdentifier::transient()),
+            call_stack: CallStack::new(),
+        }
+    }
+
+    pub fn new_free(mainnet: bool, database: ClarityDatabase<'a>) -> OwnedEnvironment<'a> {
+        OwnedEnvironment {
+            context: GlobalContext::new(mainnet, database, LimitedCostTracker::new_free()),
             default_contract: ContractContext::new(QualifiedContractIdentifier::transient()),
             call_stack: CallStack::new(),
         }
     }
 
     pub fn new_cost_limited(
+        mainnet: bool,
         database: ClarityDatabase<'a>,
         cost_tracker: LimitedCostTracker,
     ) -> OwnedEnvironment<'a> {
         OwnedEnvironment {
-            context: GlobalContext::new(database, cost_tracker),
+            context: GlobalContext::new(mainnet, database, cost_tracker),
             default_contract: ContractContext::new(QualifiedContractIdentifier::transient()),
             call_stack: CallStack::new(),
         }
@@ -453,13 +493,14 @@ impl<'a> OwnedEnvironment<'a> {
         )
     }
 
-    pub fn execute_in_env<F, A>(
+    pub fn execute_in_env<F, A, E>(
         &mut self,
         sender: Value,
         f: F,
-    ) -> Result<(A, AssetMap, Vec<StacksTransactionEvent>)>
+    ) -> std::result::Result<(A, AssetMap, Vec<StacksTransactionEvent>), E>
     where
-        F: FnOnce(&mut Environment) -> Result<A>,
+        E: From<::vm::errors::Error>,
+        F: FnOnce(&mut Environment) -> std::result::Result<A, E>,
     {
         assert!(self.context.is_top_level());
         self.begin();
@@ -533,23 +574,34 @@ impl<'a> OwnedEnvironment<'a> {
         })
     }
 
+    pub fn handle_poison_microblock(
+        &mut self,
+        sender: &PrincipalData,
+        mblock_hdr_1: &StacksMicroblockHeader,
+        mblock_hdr_2: &StacksMicroblockHeader,
+    ) -> std::result::Result<(Value, AssetMap, Vec<StacksTransactionEvent>), ChainstateError> {
+        self.execute_in_env(Value::Principal(sender.clone()), |exec_env| {
+            exec_env.handle_poison_microblock(mblock_hdr_1, mblock_hdr_2)
+        })
+    }
+
     #[cfg(test)]
     pub fn stx_faucet(&mut self, recipient: &PrincipalData, amount: u128) {
-        self.execute_in_env(recipient.clone().into(), |env| {
-            let mut balance = env
+        self.execute_in_env::<_, _, ()>(recipient.clone().into(), |env| {
+            let mut snapshot = env
                 .global_context
                 .database
-                .get_account_stx_balance(recipient);
-            let block_height = env
-                .global_context
-                .database
-                .get_current_burnchain_block_height();
-            balance
-                .credit(amount, block_height as u64)
-                .expect("ERROR: Failed to credit balance");
+                .get_stx_balance_snapshot(&recipient);
+
+            let mut balance = snapshot.balance().clone();
+            balance.amount_unlocked += amount;
+            snapshot.set_balance(balance);
+            snapshot.save();
+
             env.global_context
                 .database
-                .set_account_stx_balance(recipient, &balance);
+                .increment_ustx_liquid_supply(amount)
+                .unwrap();
             Ok(())
         })
         .unwrap();
@@ -598,6 +650,15 @@ impl<'a> OwnedEnvironment<'a> {
 }
 
 impl CostTracker for Environment<'_, '_> {
+    fn compute_cost(
+        &mut self,
+        cost_function: ClarityCostFunction,
+        input: &[u64],
+    ) -> std::result::Result<ExecutionCost, CostErrors> {
+        self.global_context
+            .cost_track
+            .compute_cost(cost_function, input)
+    }
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
         self.global_context.cost_track.add_cost(cost)
     }
@@ -610,9 +671,27 @@ impl CostTracker for Environment<'_, '_> {
     fn reset_memory(&mut self) {
         self.global_context.cost_track.reset_memory()
     }
+    fn short_circuit_contract_call(
+        &mut self,
+        contract: &QualifiedContractIdentifier,
+        function: &ClarityName,
+        input: &[u64],
+    ) -> std::result::Result<bool, CostErrors> {
+        self.global_context
+            .cost_track
+            .short_circuit_contract_call(contract, function, input)
+    }
 }
 
 impl CostTracker for GlobalContext<'_> {
+    fn compute_cost(
+        &mut self,
+        cost_function: ClarityCostFunction,
+        input: &[u64],
+    ) -> std::result::Result<ExecutionCost, CostErrors> {
+        self.cost_track.compute_cost(cost_function, input)
+    }
+
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
         self.cost_track.add_cost(cost)
     }
@@ -624,6 +703,15 @@ impl CostTracker for GlobalContext<'_> {
     }
     fn reset_memory(&mut self) {
         self.cost_track.reset_memory()
+    }
+    fn short_circuit_contract_call(
+        &mut self,
+        contract: &QualifiedContractIdentifier,
+        function: &ClarityName,
+        input: &[u64],
+    ) -> std::result::Result<bool, CostErrors> {
+        self.cost_track
+            .short_circuit_contract_call(contract, function, input)
     }
 }
 
@@ -737,6 +825,23 @@ impl<'a, 'b> Environment<'a, 'b> {
         result
     }
 
+    /// Used only for contract-call! cost short-circuiting. Once the short-circuited cost
+    ///  has been evaluated and assessed, the contract-call! itself is executed "for free".
+    pub fn run_free<F, A>(&mut self, to_run: F) -> A
+    where
+        F: FnOnce(&mut Environment) -> A,
+    {
+        let original_tracker = replace(
+            &mut self.global_context.cost_track,
+            LimitedCostTracker::new_free(),
+        );
+        // note: it is important that this method not return until original_tracker has been
+        //  restored. DO NOT use the try syntax (?).
+        let result = to_run(self);
+        self.global_context.cost_track = original_tracker;
+        result
+    }
+
     pub fn execute_contract(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
@@ -748,7 +853,7 @@ impl<'a, 'b> Environment<'a, 'b> {
             .global_context
             .database
             .get_contract_size(contract_identifier)?;
-        runtime_cost!(cost_functions::LOAD_CONTRACT, self, contract_size)?;
+        runtime_cost(ClarityCostFunction::LoadContract, self, contract_size)?;
 
         self.global_context.add_memory(contract_size)?;
 
@@ -840,12 +945,12 @@ impl<'a, 'b> Environment<'a, 'b> {
         let result = self
             .global_context
             .database
-            .set_block_hash(bhh)
+            .set_block_hash(bhh, false)
             .and_then(|prior_bhh| {
                 let result = eval(closure, self, local);
                 self.global_context
                     .database
-                    .set_block_hash(prior_bhh)
+                    .set_block_hash(prior_bhh, true)
                     .expect(
                     "ERROR: Failed to restore prior active block after time-shifted evaluation.",
                 );
@@ -877,10 +982,10 @@ impl<'a, 'b> Environment<'a, 'b> {
         // wrap in a closure so that `?` can be caught and the global_context can roll_back()
         //  before returning.
         let result = (|| {
-            runtime_cost!(
-                cost_functions::CONTRACT_STORAGE,
+            runtime_cost(
+                ClarityCostFunction::ContractStorage,
                 self,
-                contract_string.len()
+                contract_string.len(),
             )?;
 
             if self
@@ -954,6 +1059,27 @@ impl<'a, 'b> Environment<'a, 'b> {
                     Err(InterpreterError::InsufficientBalance.into())
                 }
             },
+            Err(e) => {
+                self.global_context.roll_back();
+                Err(e)
+            }
+        }
+    }
+
+    /// Top-level poison-microblock handler
+    pub fn handle_poison_microblock(
+        &mut self,
+        mblock_header_1: &StacksMicroblockHeader,
+        mblock_header_2: &StacksMicroblockHeader,
+    ) -> std::result::Result<Value, ChainstateError> {
+        self.global_context.begin();
+        let result =
+            StacksChainState::handle_poison_microblock(self, mblock_header_1, mblock_header_2);
+        match result {
+            Ok(ret) => {
+                self.global_context.commit()?;
+                Ok(ret)
+            }
             Err(e) => {
                 self.global_context.roll_back();
                 Err(e)
@@ -1051,6 +1177,26 @@ impl<'a, 'b> Environment<'a, 'b> {
         Ok(())
     }
 
+    pub fn register_nft_burn_event(
+        &mut self,
+        sender: PrincipalData,
+        value: Value,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = NFTBurnEventData {
+            sender,
+            asset_identifier,
+            value,
+        };
+
+        if let Some(batch) = self.global_context.event_batches.last_mut() {
+            batch.events.push(StacksTransactionEvent::NFTEvent(
+                NFTEventType::NFTBurnEvent(event_data),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn register_ft_transfer_event(
         &mut self,
         sender: PrincipalData,
@@ -1094,17 +1240,44 @@ impl<'a, 'b> Environment<'a, 'b> {
         }
         Ok(())
     }
+
+    pub fn register_ft_burn_event(
+        &mut self,
+        sender: PrincipalData,
+        amount: u128,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = FTBurnEventData {
+            sender,
+            asset_identifier,
+            amount,
+        };
+
+        if let Some(batch) = self.global_context.event_batches.last_mut() {
+            batch
+                .events
+                .push(StacksTransactionEvent::FTEvent(FTEventType::FTBurnEvent(
+                    event_data,
+                )));
+        }
+        Ok(())
+    }
 }
 
 impl<'a> GlobalContext<'a> {
     // Instantiate a new Global Context
-    pub fn new(database: ClarityDatabase, cost_track: LimitedCostTracker) -> GlobalContext {
+    pub fn new(
+        mainnet: bool,
+        database: ClarityDatabase,
+        cost_track: LimitedCostTracker,
+    ) -> GlobalContext {
         GlobalContext {
             database,
             cost_track,
             read_only: Vec::new(),
             asset_maps: Vec::new(),
             event_batches: Vec::new(),
+            mainnet,
         }
     }
 
@@ -1278,6 +1451,10 @@ impl ContractContext {
             implemented_traits: HashSet::new(),
             persisted_names: HashSet::new(),
             data_size: 0,
+            meta_data_map: HashMap::new(),
+            meta_data_var: HashMap::new(),
+            meta_nft: HashMap::new(),
+            meta_ft: HashMap::new(),
         }
     }
 
@@ -1368,11 +1545,12 @@ impl CallStack {
         CallStack {
             stack: Vec::new(),
             set: HashSet::new(),
+            apply_depth: 0,
         }
     }
 
     pub fn depth(&self) -> usize {
-        self.stack.len()
+        self.stack.len() + self.apply_depth
     }
 
     pub fn contains(&self, function: &FunctionIdentifier) -> bool {
@@ -1384,6 +1562,14 @@ impl CallStack {
         if track {
             self.set.insert(function.clone());
         }
+    }
+
+    pub fn incr_apply_depth(&mut self) {
+        self.apply_depth += 1;
+    }
+
+    pub fn decr_apply_depth(&mut self) {
+        self.apply_depth -= 1;
     }
 
     pub fn remove(&mut self, function: &FunctionIdentifier, tracked: bool) -> Result<()> {

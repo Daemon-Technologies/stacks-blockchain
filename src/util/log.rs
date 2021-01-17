@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,120 +14,242 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::cell::RefCell;
+use chrono::prelude::*;
+use slog::{BorrowedKV, Drain, FnValue, Level, Logger, OwnedKVList, Record, KV};
+use slog_term::{CountingWriter, Decorator, RecordDecorator, Serializer};
 use std::env;
+use std::io;
+use std::io::Write;
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, SystemTime};
 
-// Message Priorities/Levels
-// Apache Conventions defined here: https://commons.apache.org/proper/commons-logging/guide.html#Message_PrioritiesLevels
-//
-// Severe errors that cause premature termination.
-// Expect these to be immediately visible on a status console.
-pub const LOG_FATAL: u8 = 6;
-// Other runtime errors or unexpected conditions.
-// Expect these to be immediately visible on a status console.
-pub const LOG_ERROR: u8 = 5;
-// Use of deprecated APIs, poor use of API, 'almost' errors, other runtime situations that are undesirable or unexpected, but not necessarily "wrong".
-// Expect these to be immediately visible on a status console.
-pub const LOG_WARN: u8 = 4;
-// Interesting runtime events (startup/shutdown).
-// Expect these to be immediately visible on a console, so be conservative and keep to a minimum
-pub const LOG_INFO: u8 = 3;
-// Detailed information on the flow through the system.
-// Expect these to be written to logs only.
-pub const LOG_DEBUG: u8 = 2;
-// More detailed information.
-// Expect these to be written to logs only.
-pub const LOG_TRACE: u8 = 1;
-
-// per-thread log level and log format
-thread_local!(static loglevel: RefCell<u8> = RefCell::new(LOG_INFO));
-
-pub fn set_loglevel(ll: u8) -> Result<(), String> {
-    loglevel.with(move |level| match ll {
-        LOG_TRACE..=LOG_FATAL => {
-            *level.borrow_mut() = ll;
-            Ok(())
-        }
-        _ => Err("Invalid log level".to_string()),
-    })
+lazy_static! {
+    pub static ref LOGGER: Logger = make_logger();
+}
+struct TermFormat<D: Decorator> {
+    decorator: D,
+    pretty_print: bool,
+    debug: bool,
+    isatty: bool,
 }
 
-pub fn get_loglevel() -> u8 {
-    let mut res = 0;
-    loglevel.with(|lvl| {
-        res = *lvl.borrow();
-    });
+fn print_msg_header(mut rd: &mut dyn RecordDecorator, record: &Record) -> io::Result<bool> {
+    rd.start_level()?;
+    write!(rd, "{}", record.level().as_short_str())?;
+    rd.start_whitespace()?;
+    write!(rd, " ")?;
 
-    if env::var("BLOCKSTACK_DEBUG") == Ok("1".into()) && res > LOG_DEBUG {
-        set_loglevel(LOG_DEBUG).unwrap();
-        LOG_DEBUG
-    } else if env::var("BLOCKSTACK_TRACE") == Ok("1".into()) && res > LOG_TRACE {
-        set_loglevel(LOG_TRACE).unwrap();
-        LOG_TRACE
+    rd.start_timestamp()?;
+    let elapsed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0));
+    write!(
+        rd,
+        "[{:5}.{:06}]",
+        elapsed.as_secs(),
+        elapsed.subsec_nanos() / 1000
+    )?;
+    write!(rd, " ")?;
+    write!(rd, "[{}:{}]", record.file(), record.line())?;
+    write!(rd, " ")?;
+    match thread::current().name() {
+        None => write!(rd, "[{:?}]", thread::current().id())?,
+        Some(name) => write!(rd, "[{}]", name)?,
+    }
+
+    rd.start_whitespace()?;
+    write!(rd, " ")?;
+
+    rd.start_msg()?;
+    let mut count_rd = CountingWriter::new(&mut rd);
+    write!(count_rd, "{}", record.msg())?;
+    Ok(count_rd.count() != 0)
+}
+
+fn pretty_print_msg_header(
+    rd: &mut dyn RecordDecorator,
+    record: &Record,
+    debug: bool,
+    isatty: bool,
+) -> io::Result<bool> {
+    rd.start_timestamp()?;
+    let now: DateTime<Utc> = Utc::now();
+    write!(
+        rd,
+        "{}{}",
+        color_if_tty("\x1b[0;90m", isatty),
+        now.format("%b %e %T%.6f")
+    )?;
+    rd.start_whitespace()?;
+    write!(rd, " ")?;
+
+    rd.start_level()?;
+
+    match record.level() {
+        Level::Critical | Level::Error => write!(
+            rd,
+            "{}{}{}",
+            color_if_tty("\x1b[0;91m", isatty),
+            record.level().as_short_str(),
+            color_if_tty("\x1b[0m", isatty)
+        ),
+        Level::Warning => write!(
+            rd,
+            "{}{}{}",
+            color_if_tty("\x1b[0;33m", isatty),
+            record.level().as_short_str(),
+            color_if_tty("\x1b[0m", isatty)
+        ),
+        Level::Info => write!(
+            rd,
+            "{}{}{}",
+            color_if_tty("\x1b[0;94m", isatty),
+            record.level().as_short_str(),
+            color_if_tty("\x1b[0m", isatty)
+        ),
+        _ => write!(rd, "{}", record.level().as_short_str()),
+    }?;
+
+    rd.start_whitespace()?;
+    write!(rd, " ")?;
+
+    rd.start_msg()?;
+    write!(rd, "{}", record.msg())?;
+
+    if debug {
+        write!(rd, " ")?;
+        write!(
+            rd,
+            "{}({:?}, {}:{}){}",
+            color_if_tty("\x1b[0;90m", isatty),
+            thread::current().id(),
+            record.file(),
+            record.line(),
+            color_if_tty("\x1b[0m", isatty)
+        )?;
+    }
+
+    Ok(true)
+}
+
+impl<D: Decorator> Drain for TermFormat<D> {
+    type Ok = ();
+    type Err = io::Error;
+
+    fn log(&self, record: &Record, values: &OwnedKVList) -> Result<Self::Ok, Self::Err> {
+        self.format_full(record, values)
+    }
+}
+
+impl<D: Decorator> TermFormat<D> {
+    pub fn new(decorator: D, pretty_print: bool, debug: bool, isatty: bool) -> TermFormat<D> {
+        TermFormat {
+            decorator,
+            pretty_print,
+            debug,
+            isatty,
+        }
+    }
+
+    fn format_full(&self, record: &Record, values: &OwnedKVList) -> io::Result<()> {
+        self.decorator.with_record(record, values, |decorator| {
+            let comma_needed = if self.pretty_print {
+                pretty_print_msg_header(decorator, record, self.debug, self.isatty)
+            } else {
+                print_msg_header(decorator, record)
+            }?;
+            {
+                let mut serializer = Serializer::new(decorator, comma_needed, true);
+
+                record.kv().serialize(record, &mut serializer)?;
+
+                values.serialize(record, &mut serializer)?;
+
+                serializer.finish()?;
+            }
+
+            decorator.start_whitespace()?;
+            writeln!(decorator)?;
+
+            decorator.flush()?;
+
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "slog_json")]
+fn make_json_logger() -> Logger {
+    let def_keys = o!("file" => FnValue(move |info| {
+                          info.file()
+                      }),
+                      "line" => FnValue(move |info| {
+                          info.line()
+                      }),
+                      "thread" => FnValue(move |_| {
+                          match thread::current().name() {
+                              None => format!("{:?}", thread::current().id()),
+                              Some(name) => name.to_string(),
+                          }
+                      }),
+    );
+
+    let drain = Mutex::new(slog_json::Json::default(std::io::stderr())).map(slog::Fuse);
+    let filtered_drain = slog::LevelFilter::new(drain, get_loglevel()).fuse();
+    slog::Logger::root(filtered_drain, def_keys)
+}
+
+#[cfg(not(feature = "slog_json"))]
+fn make_json_logger() -> Logger {
+    panic!("Tried to construct JSON logger, but stacks-blockchain built without slog_json feature enabled.")
+}
+
+#[cfg(not(test))]
+fn make_logger() -> Logger {
+    if env::var("STACKS_LOG_JSON") == Ok("1".into()) {
+        make_json_logger()
     } else {
-        res
+        let debug = env::var("STACKS_LOG_DEBUG") == Ok("1".into());
+        let pretty_print = env::var("STACKS_LOG_PP") == Ok("1".into());
+        let decorator = slog_term::PlainSyncDecorator::new(std::io::stderr());
+        let atty = isatty(Stream::Stderr);
+        let drain = TermFormat::new(decorator, pretty_print, debug, atty);
+        let logger = Logger::root(drain.fuse(), o!());
+        logger
+    }
+}
+
+#[cfg(test)]
+fn make_logger() -> Logger {
+    if env::var("STACKS_LOG_JSON") == Ok("1".into()) {
+        make_json_logger()
+    } else {
+        let debug = env::var("STACKS_LOG_DEBUG") == Ok("1".into());
+        let plain = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
+        let isatty = isatty(Stream::Stdout);
+        let drain = TermFormat::new(plain, false, debug, isatty);
+        let logger = Logger::root(drain.fuse(), o!());
+        logger
+    }
+}
+
+pub fn get_loglevel() -> slog::Level {
+    if env::var("STACKS_LOG_TRACE") == Ok("1".into()) {
+        slog::Level::Trace
+    } else if env::var("STACKS_LOG_DEBUG") == Ok("1".into()) {
+        slog::Level::Debug
+    } else {
+        slog::Level::Info
     }
 }
 
 #[macro_export]
 macro_rules! trace {
     ($($arg:tt)*) => ({
-        if ::util::log::get_loglevel() <= ::util::log::LOG_TRACE {
-            use std::time::SystemTime;
-            use std::thread;
-            let (ts_sec, ts_msec) = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(n) => (n.as_secs(), n.subsec_nanos() / 1_000_000),
-                Err(_) => (0, 0)
-            };
-            eprintln!("TRACE [{}.{:03}] [{}:{}] [{:?}] {}", ts_sec, ts_msec, file!(), line!(), thread::current().id(), format!($($arg)*));
-        }
-    })
-}
-
-#[macro_export]
-macro_rules! debug {
-    ($($arg:tt)*) => ({
-        if ::util::log::get_loglevel() <= ::util::log::LOG_DEBUG {
-            use std::time::SystemTime;
-            use std::thread;
-            let (ts_sec, ts_msec) = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(n) => (n.as_secs(), n.subsec_nanos() / 1_000_000),
-                Err(_) => (0, 0)
-            };
-            eprintln!("DEBUG [{}.{:03}] [{}:{}] [{:?}] {}", ts_sec, ts_msec, file!(), line!(), thread::current().id(), format!($($arg)*));
-        }
-    })
-}
-
-#[macro_export]
-macro_rules! info {
-    ($($arg:tt)*) => ({
-        if ::util::log::get_loglevel() <= ::util::log::LOG_INFO {
-            use std::time::SystemTime;
-            use std::thread;
-            let (ts_sec, ts_msec) = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(n) => (n.as_secs(), n.subsec_nanos() / 1_000_000),
-                Err(_) => (0, 0)
-            };
-            eprintln!("INFO [{}.{:03}] [{}:{}] [{:?}] {}", ts_sec, ts_msec, file!(), line!(), thread::current().id(), format!($($arg)*));
-        }
-    })
-}
-
-#[macro_export]
-macro_rules! warn {
-    ($($arg:tt)*) => ({
-        if ::util::log::get_loglevel() <= ::util::log::LOG_WARN {
-            use std::time::SystemTime;
-            use std::thread;
-            use crate::monitoring::increment_warning_emitted_counter;
-            let (ts_sec, ts_msec) = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(n) => (n.as_secs(), n.subsec_nanos() / 1_000_000),
-                Err(_) => (0, 0)
-            };
-            eprintln!("WARN [{}.{:03}] [{}:{}] [{:?}] {}", ts_sec, ts_msec, file!(), line!(), thread::current().id(), format!($($arg)*));
-
-            increment_warning_emitted_counter();
+        let cur_level = ::util::log::get_loglevel();
+        if slog::Level::Trace.is_at_least(cur_level) {
+            slog_trace!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }
@@ -135,17 +257,39 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => ({
-        if ::util::log::get_loglevel() <= ::util::log::LOG_ERROR {
-            use std::time::SystemTime;
-            use std::thread;
-            use crate::monitoring::increment_errors_emitted_counter;
-            let (ts_sec, ts_msec) = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(n) => (n.as_secs(), n.subsec_nanos() / 1_000_000),
-                Err(_) => (0, 0)
-            };
-            eprintln!("ERROR [{}.{:03}] [{}:{}] [{:?}] {}", ts_sec, ts_msec, file!(), line!(), thread::current().id(), format!($($arg)*));
+        let cur_level = ::util::log::get_loglevel();
+        if slog::Level::Error.is_at_least(cur_level) {
+            slog_error!($crate::util::log::LOGGER, $($arg)*)
+        }
+    })
+}
 
-            increment_errors_emitted_counter();
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => ({
+        let cur_level = ::util::log::get_loglevel();
+        if slog::Level::Warning.is_at_least(cur_level) {
+            slog_warn!($crate::util::log::LOGGER, $($arg)*)
+        }
+    })
+}
+
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => ({
+        let cur_level = ::util::log::get_loglevel();
+        if slog::Level::Info.is_at_least(cur_level) {
+            slog_info!($crate::util::log::LOGGER, $($arg)*)
+        }
+    })
+}
+
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => ({
+        let cur_level = ::util::log::get_loglevel();
+        if slog::Level::Debug.is_at_least(cur_level) {
+            slog_debug!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }
@@ -153,14 +297,37 @@ macro_rules! error {
 #[macro_export]
 macro_rules! fatal {
     ($($arg:tt)*) => ({
-        if ::util::log::get_loglevel() <= ::util::log::LOG_FATAL {
-            use std::time::SystemTime;
-            use std::thread;
-            let (ts_sec, ts_msec) = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(n) => (n.as_secs(), n.subsec_nanos() / 1_000_000),
-                Err(_) => (0, 0)
-            };
-            eprintln!("FATAL [{}.{:03}] [{}:{}] [{:?}] {}", ts_sec, ts_msec, file!(), line!(), thread::current().id(), format!($($arg)*));
+        let cur_level = ::util::log::get_loglevel();
+        if slog::Level::Critical.is_at_least(cur_level) {
+            slog_crit!($crate::util::log::LOGGER, $($arg)*)
         }
     })
+}
+
+fn color_if_tty(color: &str, isatty: bool) -> &str {
+    if isatty {
+        color
+    } else {
+        ""
+    }
+}
+
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+#[cfg(all(unix))]
+fn isatty(stream: Stream) -> bool {
+    extern crate libc;
+    let fd = match stream {
+        Stream::Stdout => libc::STDOUT_FILENO,
+        Stream::Stderr => libc::STDERR_FILENO,
+    };
+    unsafe { libc::isatty(fd) != 0 }
+}
+
+#[cfg(not(unix))]
+fn isatty(stream: Stream) -> bool {
+    false
 }

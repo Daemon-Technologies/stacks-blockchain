@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -29,4 +29,7 @@ pub use self::clarity_db::{
 pub use self::key_value_wrapper::{RollbackWrapper, RollbackWrapperPersistedLog};
 pub use self::marf::{ClarityBackingStore, MarfedKV, MemoryBackingStore};
 pub use self::sqlite::SqliteConnection;
-pub use self::structures::{ClarityDeserializable, ClaritySerializable, STXBalance};
+pub use self::structures::{
+    ClarityDeserializable, ClaritySerializable, DataMapMetadata, DataVariableMetadata,
+    FungibleTokenMetadata, NonFungibleTokenMetadata, STXBalance,
+};

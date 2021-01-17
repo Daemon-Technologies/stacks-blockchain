@@ -73,7 +73,7 @@ impl PipeRead {
 
     fn drain_buf(&mut self, buf: &mut [u8]) -> usize {
         if self.i < self.buf.len() {
-            // have bufferred data from the last read
+            // have buffered data from the last read
             let buf_available = &self.buf[self.i..];
             let to_copy = if buf_available.len() < buf.len() {
                 buf_available.len()
@@ -164,7 +164,7 @@ impl PipeRead {
             // buffer remainder
             if copied == buf.len() && to_copy < next_bytes.len() {
                 trace!(
-                    "Pipe read bufferred {} bytes [{}...]",
+                    "Pipe read buffered {} bytes [{}...]",
                     &next_bytes[to_copy..].len(),
                     next_bytes[to_copy]
                 );
@@ -214,7 +214,7 @@ impl PipeWrite {
                 trace!("Pipe wrote {} bytes", _len);
             }
             Err(TrySendError::Full(data)) => {
-                trace!("Pipe write bufferred {} bytes", data.len());
+                trace!("Pipe write buffered {} bytes", data.len());
                 self.buf = Some(data);
             }
             Err(TrySendError::Disconnected(_)) => {
@@ -412,7 +412,9 @@ mod test {
 
     #[test]
     fn test_connection_pipe_producer_consumer() {
-        let mut buf = Box::new([0u8; 1048576]); // 1 MB
+        let mut buf = Vec::new();
+        buf.resize(1048576, 0);
+
         let mut rng = rand::thread_rng();
         rng.fill_bytes(&mut *buf);
 

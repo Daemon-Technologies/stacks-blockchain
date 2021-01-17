@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -41,6 +41,16 @@ extern crate sha3;
 extern crate time;
 extern crate url;
 
+#[macro_use(o, slog_log, slog_trace, slog_debug, slog_info, slog_warn, slog_error)]
+extern crate slog;
+extern crate chrono;
+#[cfg(feature = "slog_json")]
+extern crate slog_json;
+extern crate slog_term;
+
+#[cfg(unix)]
+extern crate libc;
+
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
@@ -61,13 +71,18 @@ pub mod util;
 pub mod net;
 
 #[macro_use]
+pub mod vm;
+
+#[macro_use]
 pub mod chainstate;
+
+#[cfg(test)]
+extern crate stx_genesis;
 
 pub mod address;
 pub mod burnchains;
 pub mod core;
 pub mod deps;
-pub mod vm;
 
 pub mod clarity;
 
@@ -85,16 +100,15 @@ const BUILD_TYPE: &'static str = "release";
 
 pub fn version_string(pkg_name: &str, pkg_version: &str) -> String {
     let git_branch = GIT_BRANCH
-        .map(|x| format!("{}:", x))
+        .map(|x| format!("{}", x))
         .unwrap_or("".to_string());
     let git_commit = GIT_COMMIT.unwrap_or("");
     let git_tree_clean = GIT_TREE_CLEAN.unwrap_or("");
 
     format!(
-        "{} {} => {} ({}{}{}, {} build, {} [{}])",
+        "{} {} ({}:{}{}, {} build, {} [{}])",
         pkg_name,
         pkg_version,
-        core::CHAINSTATE_VERSION,
         &git_branch,
         git_commit,
         git_tree_clean,

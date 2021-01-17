@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -67,8 +67,11 @@ use vm::types::{PrincipalData, QualifiedContractIdentifier, StandardPrincipalDat
 use vm::errors::Error as clarity_interpreter_error;
 
 use vm::clarity::Error as clarity_error;
+use vm::costs::CostErrors;
 use vm::costs::ExecutionCost;
 use vm::representations::{ClarityName, ContractName};
+
+use vm::contexts::GlobalContext;
 
 pub type StacksPublicKey = secp256k1::Secp256k1PublicKey;
 pub type StacksPrivateKey = secp256k1::Secp256k1PrivateKey;
@@ -84,8 +87,8 @@ pub const C32_ADDRESS_VERSION_TESTNET_MULTISIG: u8 = 21; // N
 pub const STACKS_BLOCK_VERSION: u8 = 0;
 pub const STACKS_MICROBLOCK_VERSION: u8 = 0;
 
-pub const MAX_TRANSACTION_LEN: u32 = MAX_MESSAGE_LEN; // TODO: shrink
-pub const MAX_BLOCK_LEN: u32 = MAX_MESSAGE_LEN; // TODO: shrink
+pub const MAX_BLOCK_LEN: u32 = 2 * 1024 * 1024;
+pub const MAX_TRANSACTION_LEN: u32 = MAX_BLOCK_LEN;
 
 pub struct StacksBlockId(pub [u8; 32]);
 impl_array_newtype!(StacksBlockId, u8, 32);
@@ -134,6 +137,15 @@ impl AddressHashMode {
             _ => C32_ADDRESS_VERSION_TESTNET_MULTISIG,
         }
     }
+
+    pub fn from_version(version: u8) -> AddressHashMode {
+        match version {
+            C32_ADDRESS_VERSION_TESTNET_SINGLESIG | C32_ADDRESS_VERSION_MAINNET_SINGLESIG => {
+                AddressHashMode::SerializeP2PKH
+            }
+            _ => AddressHashMode::SerializeP2SH,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -166,6 +178,18 @@ pub enum Error {
 impl From<marf_error> for Error {
     fn from(e: marf_error) -> Error {
         Error::MARFError(e)
+    }
+}
+
+impl From<clarity_error> for Error {
+    fn from(e: clarity_error) -> Error {
+        Error::ClarityError(e)
+    }
+}
+
+impl From<net_error> for Error {
+    fn from(e: net_error) -> Error {
+        Error::NetError(e)
     }
 }
 
@@ -297,6 +321,25 @@ impl From<clarity_interpreter_error> for Error {
     }
 }
 
+impl Error {
+    pub fn from_cost_error(
+        err: CostErrors,
+        cost_before: ExecutionCost,
+        context: &GlobalContext,
+    ) -> Error {
+        match err {
+            CostErrors::CostBalanceExceeded(used, budget) => {
+                Error::CostOverflowError(cost_before, used, budget)
+            }
+            _ => {
+                let cur_cost = context.cost_track.get_total();
+                let budget = context.cost_track.get_limit();
+                Error::CostOverflowError(cost_before, cur_cost, budget)
+            }
+        }
+    }
+}
+
 impl Txid {
     /// A Stacks transaction ID is a sha512/256 hash (not a double-sha256 hash)
     pub fn from_stacks_tx(txdata: &[u8]) -> Txid {
@@ -322,7 +365,7 @@ pub const STACKS_ADDRESS_ENCODED_SIZE: u32 = 1 + HASH160_ENCODED_SIZE;
 
 /// How a transaction may be appended to the Stacks blockchain
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionAnchorMode {
     OnChainOnly = 1,  // must be included in a StacksBlock
     OffChainOnly = 2, // must be included in a StacksMicroBlock
@@ -330,7 +373,7 @@ pub enum TransactionAnchorMode {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionAuthFlags {
     // types of auth
     AuthStandard = 0x04,
@@ -344,7 +387,7 @@ pub enum TransactionAuthFlags {
 /// An auth field can be a public key or a signature.  In both cases, the public key (either given
 /// in-the-raw or embedded in a signature) may be encoded as compressed or uncompressed.
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionAuthFieldID {
     // types of auth fields
     PublicKeyCompressed = 0x00,
@@ -354,7 +397,7 @@ pub enum TransactionAuthFieldID {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionPublicKeyEncoding {
     // ways we can encode a public key
     Compressed = 0x00,
@@ -375,7 +418,7 @@ impl TransactionPublicKeyEncoding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TransactionAuthField {
     PublicKey(StacksPublicKey),
     Signature(TransactionPublicKeyEncoding, MessageSignature),
@@ -433,14 +476,14 @@ impl TransactionAuthField {
 // tag address hash modes as "singlesig" or "multisig" so we can't accidentally construct an
 // invalid spending condition
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SinglesigHashMode {
     P2PKH = 0x00,
     P2WPKH = 0x02,
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MultisigHashMode {
     P2SH = 0x01,
     P2WSH = 0x03,
@@ -500,41 +543,41 @@ impl MultisigHashMode {
 /// a transaction's execution against a Stacks address.
 /// public_keys + signatures_required determines the Principal.
 /// nonce is the "check number" for the Principal.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MultisigSpendingCondition {
     pub hash_mode: MultisigHashMode,
     pub signer: Hash160,
-    pub nonce: u64,    // nth authorization from this account
-    pub fee_rate: u64, // microSTX/compute rate offered by this account
+    pub nonce: u64,  // nth authorization from this account
+    pub tx_fee: u64, // microSTX/compute rate offered by this account
     pub fields: Vec<TransactionAuthField>,
     pub signatures_required: u16,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SinglesigSpendingCondition {
     pub hash_mode: SinglesigHashMode,
     pub signer: Hash160,
-    pub nonce: u64,    // nth authorization from this account
-    pub fee_rate: u64, // microSTX/compute rate offerred by this account
+    pub nonce: u64,  // nth authorization from this account
+    pub tx_fee: u64, // microSTX/compute rate offerred by this account
     pub key_encoding: TransactionPublicKeyEncoding,
     pub signature: MessageSignature,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TransactionSpendingCondition {
     Singlesig(SinglesigSpendingCondition),
     Multisig(MultisigSpendingCondition),
 }
 
 /// Types of transaction authorizations
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TransactionAuth {
     Standard(TransactionSpendingCondition),
     Sponsored(TransactionSpendingCondition, TransactionSpendingCondition), // the second account pays on behalf of the first account
 }
 
 /// A transaction that calls into a smart contract
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransactionContractCall {
     pub address: StacksAddress,
     pub contract_name: ContractName,
@@ -543,7 +586,7 @@ pub struct TransactionContractCall {
 }
 
 /// A transaction that instantiates a smart contract
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransactionSmartContract {
     pub name: ContractName,
     pub code_body: StacksString,
@@ -555,6 +598,7 @@ impl_byte_array_message_codec!(CoinbasePayload, 32);
 impl_array_newtype!(CoinbasePayload, u8, 32);
 impl_array_hexstring_fmt!(CoinbasePayload);
 impl_byte_array_newtype!(CoinbasePayload, u8, 32);
+impl_byte_array_serde!(CoinbasePayload);
 pub const CONIBASE_PAYLOAD_ENCODED_SIZE: u32 = 32;
 
 pub struct TokenTransferMemo(pub [u8; 34]); // same length as it is in stacks v1
@@ -562,9 +606,10 @@ impl_byte_array_message_codec!(TokenTransferMemo, 34);
 impl_array_newtype!(TokenTransferMemo, u8, 34);
 impl_array_hexstring_fmt!(TokenTransferMemo);
 impl_byte_array_newtype!(TokenTransferMemo, u8, 34);
+impl_byte_array_serde!(TokenTransferMemo);
 pub const TOKEN_TRANSFER_MEMO_LENGTH: usize = 34; // same as it is in Stacks v1
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TransactionPayload {
     TokenTransfer(PrincipalData, u64, TokenTransferMemo),
     ContractCall(TransactionContractCall),
@@ -586,7 +631,7 @@ impl TransactionPayload {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionPayloadID {
     TokenTransfer = 0,
     SmartContract = 1,
@@ -596,7 +641,7 @@ pub enum TransactionPayloadID {
 }
 
 /// Encoding of an asset type identifier
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssetInfo {
     pub contract_address: StacksAddress,
     pub contract_name: ContractName,
@@ -605,7 +650,7 @@ pub struct AssetInfo {
 
 /// numeric wire-format ID of an asset info type variant
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum AssetInfoID {
     STX = 0,
     FungibleAsset = 1,
@@ -624,7 +669,7 @@ impl AssetInfoID {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum FungibleConditionCode {
     SentEq = 0x01,
     SentGt = 0x02,
@@ -657,7 +702,7 @@ impl FungibleConditionCode {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum NonfungibleConditionCode {
     Sent = 0x10,
     NotSent = 0x11,
@@ -695,7 +740,7 @@ impl NonfungibleConditionCode {
 }
 
 /// Post-condition principal.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PostConditionPrincipal {
     Origin,
     Standard(StacksAddress),
@@ -720,7 +765,7 @@ impl PostConditionPrincipal {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum PostConditionPrincipalID {
     Origin = 0x01,
     Standard = 0x02,
@@ -728,7 +773,7 @@ pub enum PostConditionPrincipalID {
 }
 
 /// Post-condition on a transaction
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TransactionPostCondition {
     STX(PostConditionPrincipal, FungibleConditionCode, u64),
     Fungible(
@@ -747,7 +792,7 @@ pub enum TransactionPostCondition {
 
 /// Post-condition modes for unspecified assets
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionPostConditionMode {
     Allow = 0x01, // allow any other changes not specified
     Deny = 0x02,  // deny any other changes not specified
@@ -755,13 +800,13 @@ pub enum TransactionPostConditionMode {
 
 /// Stacks transaction versions
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize, Deserialize)]
 pub enum TransactionVersion {
     Mainnet = 0x00,
     Testnet = 0x80,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StacksTransaction {
     pub version: TransactionVersion,
     pub chain_id: u32,
@@ -782,14 +827,14 @@ pub struct StacksTransactionSigner {
 }
 
 /// How much work has gone into this chain so far?
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StacksWorkScore {
     pub burn: u64, // number of burn tokens destroyed
     pub work: u64, // in Stacks, "work" == the length of the fork
 }
 
 /// The header for an on-chain-anchored Stacks block
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StacksBlockHeader {
     pub version: u8,
     pub total_work: StacksWorkScore, // NOTE: this is the work done on the chain tip this block builds on (i.e. take this from the parent)
@@ -804,14 +849,14 @@ pub struct StacksBlockHeader {
 
 /// A block that contains blockchain-anchored data
 /// (corresponding to a LeaderBlockCommitOp)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StacksBlock {
     pub header: StacksBlockHeader,
     pub txs: Vec<StacksTransaction>,
 }
 
 /// Header structure for a microblock
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StacksMicroblockHeader {
     pub version: u8,
     pub sequence: u16,
@@ -822,7 +867,7 @@ pub struct StacksMicroblockHeader {
 
 /// A microblock that contains non-blockchain-anchored data,
 /// but is tied to an on-chain block
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StacksMicroblock {
     pub header: StacksMicroblockHeader,
     pub txs: Vec<StacksTransaction>,
@@ -846,7 +891,8 @@ pub struct StacksBlockBuilder {
     bytes_so_far: u64,
     prev_microblock_header: StacksMicroblockHeader,
     miner_privkey: StacksPrivateKey,
-    miner_payouts: Option<Vec<MinerReward>>,
+    miner_payouts: Option<(MinerReward, Vec<MinerReward>, MinerReward)>,
+    parent_microblock_hash: Option<BlockHeaderHash>,
     miner_id: usize,
 }
 
@@ -918,7 +964,7 @@ pub mod test {
                 hash_mode: SinglesigHashMode::P2PKH,
                 key_encoding: TransactionPublicKeyEncoding::Uncompressed,
                 nonce: 123,
-                fee_rate: 456,
+                tx_fee: 456,
                 signature: MessageSignature::from_raw(&vec![0xff; 65])
             }),
             TransactionSpendingCondition::Singlesig(SinglesigSpendingCondition {
@@ -926,14 +972,14 @@ pub mod test {
                 hash_mode: SinglesigHashMode::P2PKH,
                 key_encoding: TransactionPublicKeyEncoding::Compressed,
                 nonce: 234,
-                fee_rate: 567,
+                tx_fee: 567,
                 signature: MessageSignature::from_raw(&vec![0xff; 65])
             }),
             TransactionSpendingCondition::Multisig(MultisigSpendingCondition {
                 signer: Hash160([0x11; 20]),
                 hash_mode: MultisigHashMode::P2SH,
                 nonce: 345,
-                fee_rate: 678,
+                tx_fee: 678,
                 fields: vec![
                     TransactionAuthField::Signature(TransactionPublicKeyEncoding::Uncompressed, MessageSignature::from_raw(&vec![0xff; 65])),
                     TransactionAuthField::Signature(TransactionPublicKeyEncoding::Uncompressed, MessageSignature::from_raw(&vec![0xfe; 65])),
@@ -945,7 +991,7 @@ pub mod test {
                 signer: Hash160([0x11; 20]),
                 hash_mode: MultisigHashMode::P2SH,
                 nonce: 456,
-                fee_rate: 789,
+                tx_fee: 789,
                 fields: vec![
                     TransactionAuthField::Signature(TransactionPublicKeyEncoding::Compressed, MessageSignature::from_raw(&vec![0xff; 65])),
                     TransactionAuthField::Signature(TransactionPublicKeyEncoding::Compressed, MessageSignature::from_raw(&vec![0xfe; 65])),
@@ -958,14 +1004,14 @@ pub mod test {
                 hash_mode: SinglesigHashMode::P2WPKH,
                 key_encoding: TransactionPublicKeyEncoding::Compressed,
                 nonce: 567,
-                fee_rate: 890,
+                tx_fee: 890,
                 signature: MessageSignature::from_raw(&vec![0xfe; 65]),
             }),
             TransactionSpendingCondition::Multisig(MultisigSpendingCondition {
                 signer: Hash160([0x11; 20]),
                 hash_mode: MultisigHashMode::P2WSH,
                 nonce: 678,
-                fee_rate: 901,
+                tx_fee: 901,
                 fields: vec![
                     TransactionAuthField::Signature(TransactionPublicKeyEncoding::Compressed, MessageSignature::from_raw(&vec![0xff; 65])),
                     TransactionAuthField::Signature(TransactionPublicKeyEncoding::Compressed, MessageSignature::from_raw(&vec![0xfe; 65])),

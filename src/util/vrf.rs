@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -13,7 +13,6 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -208,7 +207,7 @@ impl VRFPublicKey {
         }
     }
 
-    pub fn from_hex(h: &String) -> Option<VRFPublicKey> {
+    pub fn from_hex(h: &str) -> Option<VRFPublicKey> {
         match hex_bytes(h) {
             Ok(b) => VRF::check_public_key(&b),
             Err(_) => None,
@@ -393,6 +392,20 @@ impl VRFProof {
 
     pub fn to_hex(&self) -> String {
         to_hex(&self.to_bytes())
+    }
+}
+
+impl serde::Serialize for VRFProof {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let inst = self.to_hex();
+        s.serialize_str(&inst)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for VRFProof {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<VRFProof, D::Error> {
+        let inst_str = String::deserialize(d)?;
+        VRFProof::from_hex(&inst_str).ok_or(serde::de::Error::custom(Error::InvalidDataError))
     }
 }
 

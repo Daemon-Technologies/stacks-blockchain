@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -21,6 +21,7 @@ use std::mem;
 
 use util::log;
 use util::pair::*;
+use util::secp256k1::Secp256k1PublicKey;
 use util::HexError;
 
 use ripemd160::Ripemd160;
@@ -28,6 +29,8 @@ use sha2::{Digest, Sha256, Sha512, Sha512Trunc256};
 use sha3::Keccak256;
 
 use util::uint::Uint256;
+
+use net::StacksPublicKeyBuffer;
 
 use serde::de::Deserialize;
 use serde::de::Error as de_Error;
@@ -120,6 +123,12 @@ impl_array_newtype!(Sha256Sum, u8, 32);
 impl_array_hexstring_fmt!(Sha256Sum);
 impl_byte_array_newtype!(Sha256Sum, u8, 32);
 
+impl Default for Sha256Sum {
+    fn default() -> Self {
+        Sha256Sum::zero()
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Sha512Sum(
     #[serde(
@@ -182,6 +191,14 @@ impl Hash160 {
         let sha2_result = Sha256::digest(data);
         let ripe_160_result = Ripemd160::digest(sha2_result.as_slice());
         Hash160::from(ripe_160_result.as_slice())
+    }
+
+    pub fn from_node_public_key(pubkey: &Secp256k1PublicKey) -> Hash160 {
+        Hash160::from_data(&pubkey.to_bytes_compressed())
+    }
+
+    pub fn from_node_public_key_buffer(pubkey_buf: &StacksPublicKeyBuffer) -> Hash160 {
+        Hash160::from_data(pubkey_buf.as_bytes())
     }
 }
 
@@ -305,6 +322,9 @@ impl Sha256Sum {
         sha2_1.input(data);
         tmp.copy_from_slice(sha2_1.result().as_slice());
         Sha256Sum(tmp)
+    }
+    pub fn zero() -> Sha256Sum {
+        Sha256Sum([0u8; 32])
     }
 }
 

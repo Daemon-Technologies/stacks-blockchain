@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2020 Blocstack PBC, a public benefit corporation
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
@@ -23,6 +23,7 @@ use std::ops::DerefMut;
 use std::path;
 use std::path::PathBuf;
 use std::time;
+use std::time::Duration;
 
 use tini::Ini;
 
@@ -57,11 +58,6 @@ pub const BITCOIN_REGTEST: u32 = 0xDAB5BFFA;
 pub const BITCOIN_MAINNET_NAME: &'static str = "mainnet";
 pub const BITCOIN_TESTNET_NAME: &'static str = "testnet";
 pub const BITCOIN_REGTEST_NAME: &'static str = "regtest";
-
-// TODO: change MANINET once we have a target block
-pub const FIRST_BLOCK_MAINNET: u64 = 373601;
-pub const FIRST_BLOCK_TESTNET: u64 = 0;
-pub const FIRST_BLOCK_REGTEST: u64 = 0;
 
 // batch size for searching for a reorg
 // kept small since sometimes bitcoin will just send us one header at a time
@@ -112,7 +108,7 @@ pub struct BitcoinIndexer {
 }
 
 impl BitcoinIndexerConfig {
-    pub fn default() -> BitcoinIndexerConfig {
+    pub fn default(first_block: u64) -> BitcoinIndexerConfig {
         BitcoinIndexerConfig {
             peer_host: "bitcoin.blockstack.com".to_string(),
             peer_port: 8333,
@@ -122,7 +118,7 @@ impl BitcoinIndexerConfig {
             password: Some("blockstacksystem".to_string()),
             timeout: 30,
             spv_headers_path: "./spv-headers.dat".to_string(),
-            first_block: FIRST_BLOCK_MAINNET,
+            first_block,
             magic_bytes: BLOCKSTACK_MAGIC_MAINNET.clone(),
         }
     }
@@ -179,7 +175,7 @@ impl BitcoinIndexerConfig {
             ));
         }
 
-        let default_config = BitcoinIndexerConfig::default();
+        let default_config = BitcoinIndexerConfig::default(0);
 
         match Ini::from_file(path) {
             Ok(ini_file) => {
@@ -197,7 +193,7 @@ impl BitcoinIndexerConfig {
                         btc_error::ConfigError("Invalid bitcoin:p2p_port value".to_string())
                     })?;
 
-                if peer_port <= 1024 || peer_port >= 65535 {
+                if peer_port <= 1024 || peer_port == 65535 {
                     return Err(btc_error::ConfigError("Invalid p2p_port".to_string()));
                 }
 
@@ -210,7 +206,7 @@ impl BitcoinIndexerConfig {
                         btc_error::ConfigError("Invalid bitcoin:port value".to_string())
                     })?;
 
-                if rpc_port <= 1024 || rpc_port >= 65535 {
+                if rpc_port <= 1024 || rpc_port == 65535 {
                     return Err(btc_error::ConfigError("Invalid rpc_port".to_string()));
                 }
 
@@ -248,7 +244,7 @@ impl BitcoinIndexerConfig {
 
                 let first_block = ini_file
                     .get("bitcoin", "first_block")
-                    .unwrap_or(format!("{}", FIRST_BLOCK_MAINNET))
+                    .unwrap_or(format!("{}", 0))
                     .trim()
                     .parse()
                     .map_err(|_e| {
@@ -358,6 +354,19 @@ impl BitcoinIndexer {
                     test_debug!("Failed to set TCP_NODELAY: {:?}", &_e);
                     btc_error::ConnectionError
                 })?;
+
+                // set timeout
+                s.set_read_timeout(Some(Duration::from_secs(self.runtime.timeout)))
+                    .map_err(|_e| {
+                        test_debug!("Failed to set TCP read timeout: {:?}", &_e);
+                        btc_error::ConnectionError
+                    })?;
+
+                s.set_write_timeout(Some(Duration::from_secs(self.runtime.timeout)))
+                    .map_err(|_e| {
+                        test_debug!("Failed to set TCP write timeout: {:?}", &_e);
+                        btc_error::ConnectionError
+                    })?;
 
                 match self.runtime.sock.take() {
                     Some(s) => {
@@ -768,6 +777,7 @@ impl BurnchainIndexer for BitcoinIndexer {
     fn init(
         working_dir: &String,
         network_name: &String,
+        first_block_height: u64,
     ) -> Result<BitcoinIndexer, burnchain_error> {
         let conf_path_str = Burnchain::get_chainstate_config_path(
             working_dir,
@@ -790,7 +800,7 @@ impl BurnchainIndexer for BitcoinIndexer {
         let bitcoin_network_id = network_id_opt.unwrap();
 
         if !PathBuf::from(&conf_path_str).exists() {
-            let default_config = BitcoinIndexerConfig::default();
+            let default_config = BitcoinIndexerConfig::default(first_block_height);
             default_config
                 .to_file(&conf_path_str)
                 .map_err(burnchain_error::Bitcoin)?;
@@ -841,13 +851,24 @@ impl BurnchainIndexer for BitcoinIndexer {
             .map_err(burnchain_error::Bitcoin)
     }
 
+    fn get_highest_header_height(&self) -> Result<u64, burnchain_error> {
+        let spv_client = SpvClient::new(
+            &self.config.spv_headers_path,
+            0,
+            None,
+            self.runtime.network_id,
+            false,
+            false,
+        )
+        .map_err(burnchain_error::Bitcoin)?;
+        spv_client
+            .get_highest_header_height()
+            .map_err(burnchain_error::Bitcoin)
+    }
+
     /// Get the first block height
     fn get_first_block_height(&self) -> u64 {
-        match self.runtime.network_id {
-            BitcoinNetworkType::Mainnet => FIRST_BLOCK_MAINNET,
-            BitcoinNetworkType::Testnet => FIRST_BLOCK_TESTNET,
-            BitcoinNetworkType::Regtest => FIRST_BLOCK_REGTEST,
-        }
+        self.config.first_block
     }
 
     /// Get the first block header hash

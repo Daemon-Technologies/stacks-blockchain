@@ -502,7 +502,16 @@ impl Relayer {
         let parent_block_snapshot = match db_handle
             .get_block_snapshot_of_parent_stacks_block(consensus_hash, &block.block_hash())
         {
-            Ok(Some((_, sn))) => sn,
+            Ok(Some((_, sn))) => {
+                debug!(
+                    "Parent of {}/{} is {}/{}",
+                    consensus_hash,
+                    block.block_hash(),
+                    sn.consensus_hash,
+                    sn.winning_stacks_block_hash
+                );
+                sn
+            }
             Ok(None) => {
                 debug!(
                     "Received block with unknown parent snapshot: {}/{}",
@@ -704,6 +713,7 @@ impl Relayer {
                         block.block_hash(),
                         neighbor_key
                     );
+                    let bhh = block.block_hash();
                     match Relayer::process_new_anchored_block(
                         sort_ic,
                         chainstate,
@@ -713,6 +723,10 @@ impl Relayer {
                     ) {
                         Ok(accepted) => {
                             if accepted {
+                                debug!(
+                                    "Accepted block {}/{} from {}",
+                                    &consensus_hash, &bhh, &neighbor_key
+                                );
                                 new_blocks.insert(consensus_hash.clone());
                             }
                         }
@@ -810,19 +824,12 @@ impl Relayer {
                             continue;
                         }
                     };
+                let index_block_hash = mblock_data.index_anchor_block.clone();
                 for mblock in mblock_data.microblocks.iter() {
-                    let need_relay = !StacksChainState::has_staging_microblock(
-                        &chainstate.blocks_db,
-                        &consensus_hash,
-                        &anchored_block_hash,
-                        &mblock.block_hash(),
-                    )? && !StacksChainState::has_confirmed_microblock(
-                        &chainstate.blocks_db,
-                        &consensus_hash,
-                        &anchored_block_hash,
+                    let need_relay = !chainstate.has_descendant_microblock_indexed(
+                        &index_block_hash,
                         &mblock.block_hash(),
                     )?;
-
                     match chainstate.preprocess_streamed_microblock(
                         &consensus_hash,
                         &anchored_block_hash,
@@ -895,23 +902,6 @@ impl Relayer {
 
         let mblock_datas = Relayer::make_microblocksdata_messages(new_microblocks);
         Ok((mblock_datas, bad_neighbors))
-    }
-
-    /// Set up the unconfirmed chain state off of the canonical chain tip
-    pub fn setup_unconfirmed_state(
-        chainstate: &mut StacksChainState,
-        sortdb: &SortitionDB,
-    ) -> Result<(), Error> {
-        let (canonical_consensus_hash, canonical_block_hash) =
-            SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
-        let canonical_tip = StacksBlockHeader::make_index_block_hash(
-            &canonical_consensus_hash,
-            &canonical_block_hash,
-        );
-        // setup unconfirmed state off of this tip
-        debug!("Reload unconfirmed state");
-        chainstate.reload_unconfirmed_state(&sortdb.index_conn(), canonical_tip)?;
-        Ok(())
     }
 
     /// Process blocks and microblocks that we recieved, both downloaded (confirmed) and streamed
@@ -1002,10 +992,6 @@ impl Relayer {
             }
         }
 
-        if network_result.uploaded_microblocks.len() > 0 {
-            Relayer::setup_unconfirmed_state(chainstate, sortdb)?;
-        }
-
         Ok((
             new_blocks.into_iter().collect(),
             new_confirmed_microblocks.into_iter().collect(),
@@ -1033,57 +1019,36 @@ impl Relayer {
         Ok(ret)
     }
 
-    /// Store a single transaction
-    /// Return true if stored; false if it was a dup
-    fn store_transaction(
-        mempool: &mut MemPoolDB,
-        consensus_hash: &ConsensusHash,
-        block_hash: &BlockHeaderHash,
-        tx: StacksTransaction,
-    ) -> bool {
-        let txid = tx.txid();
-        if mempool.has_tx(&txid) {
-            debug!("Already have tx {}", txid);
-            return false;
-        }
-
-        if let Err(e) = mempool.submit(consensus_hash, block_hash, tx) {
-            info!("Reject transaction {}: {:?}", txid, &e);
-            return false;
-        }
-
-        debug!("Stored tx {}", txid);
-        return true;
-    }
-
     /// Store all new transactions we received, and return the list of transactions that we need to
     /// forward (as well as their relay hints).  Also, garbage-collect the mempool.
     fn process_transactions(
         network_result: &mut NetworkResult,
         sortdb: &SortitionDB,
-        chainstate: &StacksChainState,
+        chainstate: &mut StacksChainState,
         mempool: &mut MemPoolDB,
     ) -> Result<Vec<(Vec<RelayData>, StacksTransaction)>, net_error> {
-        let (consensus_hash, block_hash, chain_height) =
-            match chainstate.get_stacks_chain_tip(sortdb)? {
-                Some(tip) => (tip.consensus_hash, tip.anchored_block_hash, tip.height),
-                None => {
-                    debug!(
-                        "No Stacks chain tip; dropping {} transaction(s)",
-                        network_result.pushed_transactions.len()
-                    );
-                    return Ok(vec![]);
-                }
-            };
+        let chain_height = match chainstate.get_stacks_chain_tip(sortdb)? {
+            Some(tip) => tip.height,
+            None => {
+                debug!(
+                    "No Stacks chain tip; dropping {} transaction(s)",
+                    network_result.pushed_transactions.len()
+                );
+                return Ok(vec![]);
+            }
+        };
+
+        if let Err(e) = PeerNetwork::store_transactions(mempool, chainstate, sortdb, network_result)
+        {
+            warn!("Failed to store transactions: {:?}", &e);
+        }
 
         let mut ret = vec![];
 
-        // messages pushed via the p2p network
+        // messages pushed (and already stored) via the p2p network
         for (_nk, tx_data) in network_result.pushed_transactions.iter() {
             for (relayers, tx) in tx_data.iter() {
-                if Relayer::store_transaction(mempool, &consensus_hash, &block_hash, tx.clone()) {
-                    ret.push((relayers.clone(), tx.clone()));
-                }
+                ret.push((relayers.clone(), tx.clone()));
             }
         }
 
@@ -1143,6 +1108,61 @@ impl Relayer {
         )
     }
 
+    /// Set up the unconfirmed chain state off of the canonical chain tip.
+    pub fn setup_unconfirmed_state(
+        chainstate: &mut StacksChainState,
+        sortdb: &SortitionDB,
+    ) -> Result<(), Error> {
+        let (canonical_consensus_hash, canonical_block_hash) =
+            SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
+        let canonical_tip = StacksBlockHeader::make_index_block_hash(
+            &canonical_consensus_hash,
+            &canonical_block_hash,
+        );
+        // setup unconfirmed state off of this tip
+        debug!(
+            "Reload unconfirmed state off of {}/{}",
+            &canonical_consensus_hash, &canonical_block_hash
+        );
+        chainstate.reload_unconfirmed_state(&sortdb.index_conn(), canonical_tip)?;
+        Ok(())
+    }
+
+    /// Set up unconfirmed chain state in a read-only fashion
+    pub fn setup_unconfirmed_state_readonly(
+        chainstate: &mut StacksChainState,
+        sortdb: &SortitionDB,
+    ) -> Result<(), Error> {
+        let (canonical_consensus_hash, canonical_block_hash) =
+            SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
+        let canonical_tip = StacksBlockHeader::make_index_block_hash(
+            &canonical_consensus_hash,
+            &canonical_block_hash,
+        );
+
+        // setup unconfirmed state off of this tip
+        debug!(
+            "Reload read-only unconfirmed state off of {}/{}",
+            &canonical_consensus_hash, &canonical_block_hash
+        );
+        chainstate.refresh_unconfirmed_readonly(canonical_tip)?;
+        Ok(())
+    }
+
+    pub fn refresh_unconfirmed(chainstate: &mut StacksChainState, sortdb: &mut SortitionDB) {
+        if let Err(e) = Relayer::setup_unconfirmed_state(chainstate, sortdb) {
+            if let net_error::ChainstateError(ref err_msg) = e {
+                if err_msg == "Stacks chainstate error: NoSuchBlockError" {
+                    trace!("Failed to instantiate unconfirmed state: {:?}", &e);
+                } else {
+                    warn!("Failed to instantiate unconfirmed state: {:?}", &e);
+                }
+            } else {
+                warn!("Failed to instantiate unconfirmed state: {:?}", &e);
+            }
+        }
+    }
+
     /// Given a network result, consume and store all data.
     /// * Add all blocks and microblocks to staging.
     /// * Forward BlocksAvailable messages to neighbors for newly-discovered anchored blocks
@@ -1150,6 +1170,7 @@ impl Relayer {
     /// * Forward along unconfirmed microblocks that we didn't already have
     /// * Add all transactions to the mempool.
     /// * Forward transactions we didn't already have.
+    /// * Reload the unconfirmed state, if necessary.
     /// Mask errors from invalid data -- all errors due to invalid blocks and invalid data should be captured, and
     /// turned into peer bans.
     pub fn process_network_result(
@@ -1253,6 +1274,9 @@ impl Relayer {
 
         let receipts = ProcessedNetReceipts { mempool_txs_added };
 
+        // finally, refresh the unconfirmed chainstate, if need be
+        Relayer::refresh_unconfirmed(chainstate, sortdb);
+
         Ok(receipts)
     }
 }
@@ -1266,18 +1290,17 @@ impl PeerNetwork {
         &mut self,
         available: &BlocksAvailableMap,
     ) -> Result<(Vec<NeighborKey>, Vec<NeighborKey>), net_error> {
-        let outbound_recipients_set =
-            PeerNetwork::with_inv_state(self, |ref mut _network, ref mut inv_state| {
-                let mut recipients = HashSet::new();
-                for (neighbor, stats) in inv_state.block_stats.iter() {
-                    for (_, (block_height, _)) in available.iter() {
-                        if !stats.inv.has_ith_block(*block_height) {
-                            recipients.insert((*neighbor).clone());
-                        }
+        let outbound_recipients_set = PeerNetwork::with_inv_state(self, |_network, inv_state| {
+            let mut recipients = HashSet::new();
+            for (neighbor, stats) in inv_state.block_stats.iter() {
+                for (_, (block_height, _)) in available.iter() {
+                    if !stats.inv.has_ith_block(*block_height) {
+                        recipients.insert((*neighbor).clone());
                     }
                 }
-                Ok(recipients)
-            })?;
+            }
+            Ok(recipients)
+        })?;
 
         // make a normalized random sample of inbound recipients, but don't send to an inbound peer
         // if it's already represented in the outbound set, or its reciprocal conversation is
@@ -1369,7 +1392,7 @@ impl PeerNetwork {
         available: &BlocksAvailableMap,
         microblocks: bool,
     ) -> Result<(), net_error> {
-        let wanted = PeerNetwork::with_inv_state(self, |ref mut _network, ref mut inv_state| {
+        let wanted = PeerNetwork::with_inv_state(self, |_network, inv_state| {
             let mut wanted: Vec<(ConsensusHash, BurnchainHeaderHash)> = vec![];
             if let Some(stats) = inv_state.block_stats.get(recipient) {
                 for (bhh, (block_height, ch)) in available.iter() {
@@ -1430,7 +1453,7 @@ impl PeerNetwork {
     }
 
     /// Announce blocks that we have to a subset of inbound and outbound peers.
-    /// * Outbound peers recieve announcements for blocks that we know they don't have, based on
+    /// * Outbound peers receive announcements for blocks that we know they don't have, based on
     /// the inv state we synchronized from them.
     /// * Inbound peers are chosen uniformly at random to receive a full announcement, since we
     /// don't track their inventory state.
@@ -1440,6 +1463,14 @@ impl PeerNetwork {
     ) -> Result<(), net_error> {
         let (mut outbound_recipients, mut inbound_recipients) =
             self.find_block_recipients(&availability_data)?;
+        debug!(
+            "{:?}: Advertize {} blocks to {} inbound peers, {} outbound peers",
+            &self.local_peer,
+            availability_data.len(),
+            outbound_recipients.len(),
+            inbound_recipients.len()
+        );
+
         for recipient in outbound_recipients.drain(..) {
             debug!(
                 "{:?}: Advertize {} blocks to outbound peer {}",
@@ -1464,7 +1495,7 @@ impl PeerNetwork {
     }
 
     /// Announce confirmed microblocks that we have to a subset of inbound and outbound peers.
-    /// * Outbound peers recieve announcements for confirmed microblocks that we know they don't have, based on
+    /// * Outbound peers receive announcements for confirmed microblocks that we know they don't have, based on
     /// the inv state we synchronized from them.
     /// * Inbound peers are chosen uniformly at random to receive a full announcement, since we
     /// don't track their inventory state.
@@ -1474,6 +1505,8 @@ impl PeerNetwork {
     ) -> Result<(), net_error> {
         let (mut outbound_recipients, mut inbound_recipients) =
             self.find_block_recipients(&availability_data)?;
+        debug!("{:?}: Advertize {} confirmed microblock streams to {} inbound peers, {} outbound peers", &self.local_peer, availability_data.len(), outbound_recipients.len(), inbound_recipients.len());
+
         for recipient in outbound_recipients.drain(..) {
             debug!(
                 "{:?}: Advertize {} confirmed microblock streams to outbound peer {}",
@@ -1951,11 +1984,6 @@ mod test {
                     peer_configs[0].connection_opts.timeout = 180;
                     peer_configs[1].connection_opts.timeout = 180;
                     peer_configs[2].connection_opts.timeout = 180;
-
-                    // impatient
-                    peer_configs[0].connection_opts.download_interval = 5;
-                    peer_configs[1].connection_opts.download_interval = 5;
-                    peer_configs[2].connection_opts.download_interval = 5;
 
                     let peer_0 = peer_configs[0].to_neighbor();
                     let peer_1 = peer_configs[1].to_neighbor();
@@ -2580,17 +2608,16 @@ mod test {
 
                     let chain_tip =
                         StacksBlockHeader::make_index_block_hash(consensus_hash, block_hash);
-                    let cur_nonce = stacks_node.chainstate.with_read_only_clarity_tx(
-                        &sortdb.index_conn(),
-                        &chain_tip,
-                        |clarity_tx| {
+                    let cur_nonce = stacks_node
+                        .chainstate
+                        .with_read_only_clarity_tx(&sortdb.index_conn(), &chain_tip, |clarity_tx| {
                             clarity_tx.with_clarity_db_readonly(|clarity_db| {
                                 clarity_db.get_account_nonce(
                                     &spending_account.origin_address().unwrap().into(),
                                 )
                             })
-                        },
-                    );
+                        })
+                        .unwrap();
 
                     test_debug!(
                         "Nonce of {:?} is {} at {}/{}",
@@ -2604,7 +2631,7 @@ mod test {
 
                     tx_contract.chain_id = 0x80000000;
                     tx_contract.auth.set_origin_nonce(cur_nonce);
-                    tx_contract.set_fee_rate(MINIMUM_TX_FEE_RATE_PER_BYTE * 500);
+                    tx_contract.set_tx_fee(MINIMUM_TX_FEE_RATE_PER_BYTE * 500);
 
                     let mut tx_signer = StacksTransactionSigner::new(&tx_contract);
                     spending_account.sign_as_origin(&mut tx_signer);
@@ -2700,7 +2727,7 @@ mod test {
 
                     // build up block data to replicate
                     let mut block_data = vec![];
-                    for _ in 0..num_blocks {
+                    for b in 0..num_blocks {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
@@ -2725,6 +2752,10 @@ mod test {
 
                         for i in 1..peers.len() {
                             peers[i].next_burnchain_block_raw(burn_ops.clone());
+                            if b == 0 {
+                                // prime with first block
+                                peers[i].process_stacks_epoch_at_tip(&stacks_block, &vec![]);
+                            }
                         }
 
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
@@ -2829,41 +2860,72 @@ mod test {
                             // push blocks and microblocks in order, and push a
                             // transaction that can only be validated once the
                             // block and microblocks are processed.
-                            let ((consensus_hash, block, microblocks), idx) = {
+                            let (
+                                (
+                                    block_consensus_hash,
+                                    block,
+                                    microblocks_consensus_hash,
+                                    microblocks_block_hash,
+                                    microblocks,
+                                ),
+                                idx,
+                            ) = {
                                 let block_data = blocks_and_microblocks.borrow();
                                 let mut idx = blocks_idx.borrow_mut();
 
-                                let ret = block_data[*idx].clone();
+                                let microblocks = block_data[*idx].2.clone();
+                                let microblocks_consensus_hash = block_data[*idx].0.clone();
+                                let microblocks_block_hash = block_data[*idx].1.block_hash();
+
                                 *idx += 1;
                                 if *idx >= block_data.len() {
-                                    *idx = 0;
+                                    *idx = 1;
                                 }
-                                (ret, *idx)
+
+                                let block = block_data[*idx].1.clone();
+                                let block_consensus_hash = block_data[*idx].0.clone();
+                                (
+                                    (
+                                        block_consensus_hash,
+                                        block,
+                                        microblocks_consensus_hash,
+                                        microblocks_block_hash,
+                                        microblocks,
+                                    ),
+                                    *idx,
+                                )
                             };
 
                             if !done_flag {
                                 test_debug!(
-                                    "Push block {}/{} and microblocks (idx = {})",
-                                    &consensus_hash,
-                                    block.block_hash(),
+                                    "Push microblocks built by {}/{} (idx={})",
+                                    &microblocks_consensus_hash,
+                                    &microblocks_block_hash,
                                     idx
                                 );
 
                                 let block_hash = block.block_hash();
-                                push_block(
-                                    &mut peers[0],
-                                    &peer_1_nk,
-                                    vec![],
-                                    consensus_hash.clone(),
-                                    block,
-                                );
                                 push_microblocks(
                                     &mut peers[0],
                                     &peer_1_nk,
                                     vec![],
-                                    consensus_hash,
-                                    block_hash,
+                                    microblocks_consensus_hash,
+                                    microblocks_block_hash,
                                     microblocks,
+                                );
+
+                                test_debug!(
+                                    "Push block {}/{} and microblocks (idx = {})",
+                                    &block_consensus_hash,
+                                    block.block_hash(),
+                                    idx
+                                );
+                                push_block(
+                                    &mut peers[0],
+                                    &peer_1_nk,
+                                    vec![],
+                                    block_consensus_hash.clone(),
+                                    block,
                                 );
 
                                 // create a transaction against the resulting
@@ -2871,7 +2933,7 @@ mod test {
                                 let tx = make_test_smart_contract_transaction(
                                     &mut peers[0],
                                     &format!("test-contract-{}", &block_hash.to_hex()[0..10]),
-                                    &consensus_hash,
+                                    &block_consensus_hash,
                                     &block_hash,
                                 );
 
@@ -2955,6 +3017,13 @@ mod test {
                     1000,
                 )
                 .unwrap();
+                test_debug!(
+                    "Check {}/{} (height {}): expect {}",
+                    &consensus_hash,
+                    &block_hash,
+                    block.header.total_work.work,
+                    &sent_tx.txid()
+                );
                 assert_eq!(tx_infos.len(), 1);
                 assert_eq!(tx_infos[0].tx.txid(), sent_tx.txid());
             }
@@ -3002,7 +3071,7 @@ mod test {
 
                         // don't throttle downloads
                         peer_configs[i].connection_opts.download_interval = 0;
-                        peer_configs[i].connection_opts.inv_sync_interval = 30;
+                        peer_configs[i].connection_opts.inv_sync_interval = 0;
 
                         let max_inflight = peer_configs[i].connection_opts.max_inflight_blocks;
                         peer_configs[i].connection_opts.max_clients_per_host =
@@ -3093,6 +3162,12 @@ mod test {
                     block_data
                 },
                 |ref mut peers| {
+                    for peer in peers.iter_mut() {
+                        // force peers to keep trying to process buffered data
+                        peer.network.antientropy_last_burnchain_tip =
+                            BurnchainHeaderHash([0u8; 32]);
+                    }
+
                     let done_flag = *done.borrow();
 
                     let mut connectivity_0_to_n = HashSet::new();
@@ -3217,6 +3292,11 @@ mod test {
                         let mut expected_txs = sent_txs.borrow_mut();
                         expected_txs.push(tx.clone());
 
+                        test_debug!(
+                            "Broadcast {}/{} and its microblocks",
+                            &consensus_hash,
+                            &block.block_hash()
+                        );
                         // next block
                         broadcast_block(&mut peers[0], vec![], consensus_hash.clone(), block);
                         broadcast_microblocks(
@@ -3297,6 +3377,320 @@ mod test {
                     assert_eq!(tx_infos[0].tx.txid(), sent_tx.txid());
                 }
             }
+        })
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_blocks_and_microblocks_2_peers_antientropy() {
+        with_timeout(600, move || {
+            run_get_blocks_and_microblocks(
+                "test_get_blocks_and_microblocks_2_peers_antientropy",
+                4240,
+                2,
+                |ref mut peer_configs| {
+                    // build initial network topology.
+                    assert_eq!(peer_configs.len(), 2);
+
+                    // peer 0 mines blocks, but does not advertize them nor announce them as
+                    // available via its inventory.  It only uses its anti-entropy protocol to
+                    // discover that peer 1 doesn't have them, and sends them to peer 1 that way.
+                    peer_configs[0].connection_opts.disable_block_advertisement = true;
+                    peer_configs[0].connection_opts.disable_inv_chat = true;
+                    peer_configs[0].connection_opts.disable_block_download = true;
+
+                    peer_configs[1].connection_opts.disable_block_download = true;
+                    peer_configs[1].connection_opts.disable_block_advertisement = true;
+
+                    // disable nat punches -- disconnect/reconnect
+                    // clears inv state
+                    peer_configs[0].connection_opts.disable_natpunch = true;
+                    peer_configs[1].connection_opts.disable_natpunch = true;
+
+                    // peer 0 ignores peer 1's handshakes
+                    peer_configs[0].connection_opts.disable_inbound_handshakes = true;
+
+                    // make peer 0 go slowly
+                    peer_configs[0].connection_opts.max_block_push = 2;
+                    peer_configs[0].connection_opts.max_microblock_push = 2;
+
+                    let peer_0 = peer_configs[0].to_neighbor();
+                    let peer_1 = peer_configs[1].to_neighbor();
+
+                    // peer 0 is inbound to peer 1
+                    peer_configs[0].add_neighbor(&peer_1);
+                    peer_configs[1].add_neighbor(&peer_0);
+                },
+                |num_blocks, ref mut peers| {
+                    let tip = SortitionDB::get_canonical_burn_chain_tip(
+                        &peers[0].sortdb.as_ref().unwrap().conn(),
+                    )
+                    .unwrap();
+                    let this_reward_cycle = peers[0]
+                        .config
+                        .burnchain
+                        .block_height_to_reward_cycle(tip.block_height)
+                        .unwrap();
+
+                    // build up block data to replicate
+                    let mut block_data = vec![];
+                    for _ in 0..num_blocks {
+                        let tip = SortitionDB::get_canonical_burn_chain_tip(
+                            &peers[0].sortdb.as_ref().unwrap().conn(),
+                        )
+                        .unwrap();
+                        if peers[0]
+                            .config
+                            .burnchain
+                            .block_height_to_reward_cycle(tip.block_height)
+                            .unwrap()
+                            != this_reward_cycle
+                        {
+                            continue;
+                        }
+                        let (mut burn_ops, stacks_block, microblocks) =
+                            peers[0].make_default_tenure();
+
+                        let (_, burn_header_hash, consensus_hash) =
+                            peers[0].next_burnchain_block(burn_ops.clone());
+                        peers[0].process_stacks_epoch_at_tip(&stacks_block, &microblocks);
+
+                        TestPeer::set_ops_burn_header_hash(&mut burn_ops, &burn_header_hash);
+
+                        for i in 1..peers.len() {
+                            peers[i].next_burnchain_block_raw(burn_ops.clone());
+                        }
+
+                        let sn = SortitionDB::get_canonical_burn_chain_tip(
+                            &peers[0].sortdb.as_ref().unwrap().conn(),
+                        )
+                        .unwrap();
+                        block_data.push((
+                            sn.consensus_hash.clone(),
+                            Some(stacks_block),
+                            Some(microblocks),
+                        ));
+                    }
+                    block_data
+                },
+                |ref mut peers| {
+                    for peer in peers.iter_mut() {
+                        // force peers to keep trying to process buffered data
+                        peer.network.antientropy_last_burnchain_tip =
+                            BurnchainHeaderHash([0u8; 32]);
+                    }
+
+                    let tip_opt = peers[1]
+                        .with_db_state(|sortdb, chainstate, _, _| {
+                            let tip_opt = chainstate.get_stacks_chain_tip(sortdb).unwrap();
+                            Ok(tip_opt)
+                        })
+                        .unwrap();
+                },
+                |ref peer| {
+                    // check peer health
+                    // nothing should break
+                    // TODO
+                    true
+                },
+                |_| true,
+            );
+        })
+    }
+
+    #[test]
+    #[ignore]
+    fn test_get_blocks_and_microblocks_2_peers_buffered_messages() {
+        with_timeout(600, move || {
+            let sortitions = RefCell::new(vec![]);
+            let blocks_and_microblocks = RefCell::new(vec![]);
+            let idx = RefCell::new(0usize);
+            let pushed_idx = RefCell::new(0usize);
+            run_get_blocks_and_microblocks(
+                "test_get_blocks_and_microblocks_2_peers_buffered_messages",
+                4242,
+                2,
+                |ref mut peer_configs| {
+                    // build initial network topology.
+                    assert_eq!(peer_configs.len(), 2);
+
+                    // peer 0 mines blocks, but it does not present its inventory.
+                    peer_configs[0].connection_opts.disable_inv_chat = true;
+                    peer_configs[0].connection_opts.disable_block_download = true;
+
+                    peer_configs[1].connection_opts.disable_block_download = true;
+                    peer_configs[1].connection_opts.disable_block_advertisement = true;
+
+                    // disable nat punches -- disconnect/reconnect
+                    // clears inv state
+                    peer_configs[0].connection_opts.disable_natpunch = true;
+                    peer_configs[1].connection_opts.disable_natpunch = true;
+
+                    // peer 0 ignores peer 1's handshakes
+                    peer_configs[0].connection_opts.disable_inbound_handshakes = true;
+
+                    // disable anti-entropy
+                    peer_configs[0].connection_opts.max_block_push = 0;
+                    peer_configs[0].connection_opts.max_microblock_push = 0;
+
+                    let peer_0 = peer_configs[0].to_neighbor();
+                    let peer_1 = peer_configs[1].to_neighbor();
+
+                    // peer 0 is inbound to peer 1
+                    peer_configs[0].add_neighbor(&peer_1);
+                    peer_configs[1].add_neighbor(&peer_0);
+                },
+                |num_blocks, ref mut peers| {
+                    let tip = SortitionDB::get_canonical_burn_chain_tip(
+                        &peers[0].sortdb.as_ref().unwrap().conn(),
+                    )
+                    .unwrap();
+                    let this_reward_cycle = peers[0]
+                        .config
+                        .burnchain
+                        .block_height_to_reward_cycle(tip.block_height)
+                        .unwrap();
+
+                    // build up block data to replicate
+                    let mut block_data = vec![];
+                    for block_num in 0..num_blocks {
+                        let tip = SortitionDB::get_canonical_burn_chain_tip(
+                            &peers[0].sortdb.as_ref().unwrap().conn(),
+                        )
+                        .unwrap();
+                        let (mut burn_ops, stacks_block, microblocks) =
+                            peers[0].make_default_tenure();
+
+                        let (_, burn_header_hash, consensus_hash) =
+                            peers[0].next_burnchain_block(burn_ops.clone());
+                        peers[0].process_stacks_epoch_at_tip(&stacks_block, &microblocks);
+
+                        TestPeer::set_ops_burn_header_hash(&mut burn_ops, &burn_header_hash);
+
+                        if block_num == 0 {
+                            for i in 1..peers.len() {
+                                peers[i].next_burnchain_block_raw(burn_ops.clone());
+                                peers[i].process_stacks_epoch_at_tip(&stacks_block, &microblocks);
+                            }
+                        } else {
+                            let mut all_sortitions = sortitions.borrow_mut();
+                            all_sortitions.push(burn_ops.clone());
+                        }
+
+                        let sn = SortitionDB::get_canonical_burn_chain_tip(
+                            &peers[0].sortdb.as_ref().unwrap().conn(),
+                        )
+                        .unwrap();
+                        block_data.push((
+                            sn.consensus_hash.clone(),
+                            Some(stacks_block),
+                            Some(microblocks),
+                        ));
+                    }
+                    *blocks_and_microblocks.borrow_mut() = block_data.clone()[1..]
+                        .to_vec()
+                        .drain(..)
+                        .map(|(ch, blk_opt, mblocks_opt)| {
+                            (ch, blk_opt.unwrap(), mblocks_opt.unwrap())
+                        })
+                        .collect();
+                    block_data
+                },
+                |ref mut peers| {
+                    for peer in peers.iter_mut() {
+                        // force peers to keep trying to process buffered data
+                        peer.network.antientropy_last_burnchain_tip =
+                            BurnchainHeaderHash([0u8; 32]);
+                    }
+
+                    let mut i = idx.borrow_mut();
+                    let mut pushed_i = pushed_idx.borrow_mut();
+                    let all_sortitions = sortitions.borrow();
+                    let all_blocks_and_microblocks = blocks_and_microblocks.borrow();
+                    let peer_0_nk = peers[0].to_neighbor().addr;
+                    let peer_1_nk = peers[1].to_neighbor().addr;
+
+                    let tip_opt = peers[1]
+                        .with_db_state(|sortdb, chainstate, _, _| {
+                            let tip_opt = chainstate.get_stacks_chain_tip(sortdb).unwrap();
+                            Ok(tip_opt)
+                        })
+                        .unwrap();
+
+                    if !is_peer_connected(&peers[0], &peer_1_nk) {
+                        debug!("Peer 0 not connected to peer 1");
+                        return;
+                    }
+
+                    if let Some(tip) = tip_opt {
+                        debug!(
+                            "Push at {}, need {}",
+                            tip.height - peers[1].config.burnchain.first_block_height - 1,
+                            *pushed_i
+                        );
+                        if tip.height - peers[1].config.burnchain.first_block_height - 1
+                            == *pushed_i as u64
+                        {
+                            // next block
+                            push_block(
+                                &mut peers[0],
+                                &peer_1_nk,
+                                vec![],
+                                (*all_blocks_and_microblocks)[*pushed_i].0.clone(),
+                                (*all_blocks_and_microblocks)[*pushed_i].1.clone(),
+                            );
+                            push_microblocks(
+                                &mut peers[0],
+                                &peer_1_nk,
+                                vec![],
+                                (*all_blocks_and_microblocks)[*pushed_i].0.clone(),
+                                (*all_blocks_and_microblocks)[*pushed_i].1.block_hash(),
+                                (*all_blocks_and_microblocks)[*pushed_i].2.clone(),
+                            );
+                            *pushed_i += 1;
+                        }
+                        debug!(
+                            "Sortition at {}, need {}",
+                            tip.height - peers[1].config.burnchain.first_block_height - 1,
+                            *i
+                        );
+                        if tip.height - peers[1].config.burnchain.first_block_height - 1
+                            == *i as u64
+                        {
+                            let event_id = {
+                                let mut ret = 0;
+                                for (nk, event_id) in peers[1].network.events.iter() {
+                                    ret = *event_id;
+                                    break;
+                                }
+                                if ret == 0 {
+                                    return;
+                                }
+                                ret
+                            };
+                            let mut update_sortition = false;
+                            for (event_id, pending) in peers[1].network.pending_messages.iter() {
+                                debug!("Pending at {} is ({}, {})", *i, event_id, pending.len());
+                                if pending.len() >= 1 {
+                                    update_sortition = true;
+                                }
+                            }
+                            if update_sortition {
+                                debug!("Advance sortition!");
+                                peers[1].next_burnchain_block_raw((*all_sortitions)[*i].clone());
+                                *i += 1;
+                            }
+                        }
+                    }
+                },
+                |ref peer| {
+                    // check peer health
+                    // nothing should break
+                    // TODO
+                    true
+                },
+                |_| true,
+            );
         })
     }
 
