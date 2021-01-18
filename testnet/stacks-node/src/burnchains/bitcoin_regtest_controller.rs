@@ -534,7 +534,7 @@ impl BitcoinRegtestController {
         let public_key = signer.get_public_key();
 
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("build_leader_key_register_tx -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("burn_fee_cap: {:?}", v["burn_fee_cap"].as_u64().unwrap());
         println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());
@@ -768,7 +768,7 @@ impl BitcoinRegtestController {
         }
 
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("build_leader_block_commit_tx -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("burn_fee_cap_from_file: {:?}. payload.burn_fee: {:?}", v["burn_fee_cap"].as_u64().unwrap(), payload.burn_fee);
         println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());

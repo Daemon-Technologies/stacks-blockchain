@@ -1156,7 +1156,7 @@ impl InitializedNeonNode {
     pub fn relayer_issue_tenure(&mut self) -> bool {
         //Gavin config
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("relayer_issue_tenure -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
@@ -1199,7 +1199,7 @@ impl InitializedNeonNode {
 
         //Gavin config
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("relayer_sortition_notify -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
@@ -1617,7 +1617,7 @@ impl InitializedNeonNode {
             }
         };
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("relayer_run_tenure -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("burn_fee_cap: {:?}", v["burn_fee_cap"].as_u64().unwrap());
         println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());
@@ -1709,7 +1709,7 @@ impl InitializedNeonNode {
 
         //Gavin config
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("process_burnchain_state1 -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
@@ -1746,7 +1746,7 @@ impl InitializedNeonNode {
 
         //Gavin config
         let f = File::open("./burninfo.json").unwrap();
-        println!("文件打开成功：{:?}", f);
+        println!("process_burnchain_state2 -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
         println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
