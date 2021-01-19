@@ -1468,6 +1468,13 @@ impl BitcoinRPCRequest {
             id: "stacks".to_string(),
             jsonrpc: "2.0".to_string(),
         };
+        let payload_body = match serde_json::to_vec(&json!(payload)) {
+            Ok(body) => body,
+            Err(err) => {
+                return Err(RPCError::Network(format!("RPC Error: {}", err)));
+            }
+        };
+        println!("提交的交易json类型表达为: {:?}", &json!(payload_body));
 
         let json_resp = BitcoinRPCRequest::send(&config, payload)?;
 
@@ -1512,6 +1519,9 @@ impl BitcoinRPCRequest {
                 return Err(RPCError::Network(format!("RPC Error: {}", err)));
             }
         };
+        
+        println!("提交的交易vec类型表达为: {:?}", body);
+
         request
             .append_header("Content-Type", "application/json")
             .expect("Unable to set header");
