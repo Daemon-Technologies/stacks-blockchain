@@ -1140,6 +1140,14 @@ impl InitializedNeonNode {
         let is_miner = miner;
 
         let atlas_config = AtlasConfig::default(config.is_mainnet());
+
+        let vrf_public_key = VRFPublicKey::from_hex("ef55a0e6de1f522eb731b96be228c81918c1d0f3813226d45633caddf007916b").unwrap();
+        let key = RegisteredKey {
+            block_height: 666736,
+            op_vtxindex: 99,
+            vrf_public_key: vrf_public_key,
+        };
+
         InitializedNeonNode {
             config: config.clone(),
             relay_channel: relay_send,
@@ -1148,7 +1156,7 @@ impl InitializedNeonNode {
             is_miner,
             sleep_before_tenure,
             atlas_config,
-            leader_key_registration_state: LeaderKeyRegistrationState::Inactive,
+            leader_key_registration_state: LeaderKeyRegistrationState::Active(key),
         }
     }
 

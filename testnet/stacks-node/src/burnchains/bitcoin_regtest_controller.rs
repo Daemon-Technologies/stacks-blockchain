@@ -550,6 +550,7 @@ impl BitcoinRegtestController {
 
         let (mut tx, utxos) = self.prepare_tx(&public_key, total_required, attempt)?;
 
+        println!("leader_key_register_tx的payload是: {:?}", &json!(payload));
         // Serialize the payload
         let op_bytes = {
             let mut buffer = vec![];
@@ -786,7 +787,7 @@ impl BitcoinRegtestController {
         let total_required = btc_miner_fee + budget_for_outputs + rbf_fee;
 
         let (mut tx, utxos) = self.prepare_tx(&public_key, total_required, attempt)?;
-
+        println!("leader_block_commit_tx 的 paload是: {:?}", &json!(payload));
         // Serialize the payload
         let op_bytes = {
             let mut buffer = vec![];
@@ -1185,8 +1186,9 @@ impl BurnchainController for BitcoinRegtestController {
             Some(tx) => SerializedTx::new(tx),
             _ => return false,
         };
-
-        self.send_transaction(transaction)
+        
+        false
+        // self.send_transaction(transaction)
     }
 
     #[cfg(test)]
@@ -1468,13 +1470,7 @@ impl BitcoinRPCRequest {
             id: "stacks".to_string(),
             jsonrpc: "2.0".to_string(),
         };
-        let payload_body = match serde_json::to_vec(&json!(payload)) {
-            Ok(body) => body,
-            Err(err) => {
-                return Err(RPCError::Network(format!("RPC Error: {}", err)));
-            }
-        };
-        println!("提交的交易json类型表达为: {:?}", &json!(payload_body));
+        // println!("提交的交易json类型表达为: {:?}", &json!(payload));
 
         let json_resp = BitcoinRPCRequest::send(&config, payload)?;
 
@@ -1579,6 +1575,7 @@ impl BitcoinRPCRequest {
 
         let payload = serde_json::from_slice::<serde_json::Value>(&buffer[..])
             .map_err(|e| RPCError::Parsing(format!("Bitcoin RPC: {}", e)))?;
+        println!("交易返回为: {:?}", payload);
         Ok(payload)
     }
 }
