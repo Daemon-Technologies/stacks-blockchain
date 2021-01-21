@@ -786,9 +786,9 @@ impl BitcoinRegtestController {
                         &payload.parent_block_ptr = parent_block_ptr;
                         &payload.parent_vtxindex = parent_txoff;
                         &payload.burn_parent_modulus = burn_parent_modulus as &u8;
-                        println!("修改后payload的parent_block_ptr: {:?}", parent_block_ptr);
-                        println!("修改后payload的parent_vtxindex: {:?}", parent_txoff);
-                        println!("修改后payload的burn_parent_modulus: {:?}", burn_parent_modulus);
+                        println!("修改后payload的parent_block_ptr: {:?}", payload.parent_block_ptr);
+                        println!("修改后payload的parent_vtxindex: {:?}", payload.parent_vtxindex);
+                        println!("修改后payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
                         break;
                     }
                 }
