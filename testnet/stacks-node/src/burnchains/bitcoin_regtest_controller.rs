@@ -1018,6 +1018,8 @@ impl BitcoinRegtestController {
         match result {
             Ok(_) => true,
             Err(e) => {
+                // 如果发送交易出错，清空信息，让节点能够重发交易
+                fs::write("./commitTx.txt", "0-0-0").unwrap();
                 error!(
                     "Bitcoin RPC failure: transaction submission failed - {:?}",
                     e
