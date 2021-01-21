@@ -1234,8 +1234,8 @@ impl BurnchainController for BitcoinRegtestController {
         };
 
         println!("进入发送交易");
-        false
-//        self.send_transaction(transaction)
+//        false
+        self.send_transaction(transaction)
     }
 
     #[cfg(test)]
