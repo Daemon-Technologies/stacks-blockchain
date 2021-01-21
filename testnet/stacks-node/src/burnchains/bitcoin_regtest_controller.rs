@@ -1,9 +1,10 @@
+extern crate ureq;
+
 use async_h1::client;
 use async_std::io::ReadExt;
 use async_std::net::TcpStream;
 use base64::encode;
 use http_types::{Method, Request, Url};
-use isahc::prelude::*;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
@@ -773,10 +774,10 @@ impl BitcoinRegtestController {
         println!("原始payload的parent_vtxindex: {:?}", payload.parent_vtxindex);
         println!("原始payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
         loop {
-            let response = isahc::get("https://localhost:8889/snapshotIntegrate");
+            let response = ureq::get("http://localhost:8889/snapshotIntegrate").call();
             match response {
                 Ok(mut resp) => {
-                    let text = resp.text().unwrap();
+                    let text = resp.into_string().unwrap();
                     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
                     let status = v["status"].as_i64().unwrap();
                     if status == 200 {
