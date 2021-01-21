@@ -1170,12 +1170,12 @@ impl InitializedNeonNode {
     /// Tell the relayer to fire off a tenure and a block commit op.
     pub fn relayer_issue_tenure(&mut self) -> bool {
         //Gavin config
-        let f = File::open("./burninfo.json").unwrap();
-        println!("relayer_issue_tenure -> 文件打开成功：{:?}", f);
-        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
-        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
-
-        if !v["is_miner"].as_bool().unwrap() {
+//        let f = File::open("./burninfo.json").unwrap();
+//        println!("relayer_issue_tenure -> 文件打开成功：{:?}", f);
+//        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+//        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
+//
+        if !self.is_miner {
             // !self.is_miner {
             // node is a follower, don't try to issue a tenure
             return true;
@@ -1213,12 +1213,12 @@ impl InitializedNeonNode {
     pub fn relayer_sortition_notify(&self) -> bool {
 
         //Gavin config
-        let f = File::open("./burninfo.json").unwrap();
-        println!("relayer_sortition_notify -> 文件打开成功：{:?}", f);
-        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
-        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
-
-        if !v["is_miner"].as_bool().unwrap() {
+//        let f = File::open("./burninfo.json").unwrap();
+//        println!("relayer_sortition_notify -> 文件打开成功：{:?}", f);
+//        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+//        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
+//
+        if !self.is_miner {
             // !self.is_miner {
             // node is a follower, don't try to process my own tenure.
             return true;
@@ -1720,10 +1720,10 @@ impl InitializedNeonNode {
         let (_, network) = self.config.burnchain.get_bitcoin_network();
 
         //Gavin config
-        let f = File::open("./burninfo.json").unwrap();
-        println!("process_burnchain_state1 -> 文件打开成功：{:?}", f);
-        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
-        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
+//        let f = File::open("./burninfo.json").unwrap();
+//        println!("process_burnchain_state1 -> 文件打开成功：{:?}", f);
+//        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+//        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
         for op in block_commits.into_iter() {
             if op.txid == block_snapshot.winning_block_txid {
@@ -1735,7 +1735,7 @@ impl InitializedNeonNode {
                 );
                 last_sortitioned_block = Some((block_snapshot.clone(), op.vtxindex));
             } else {
-                if v["is_miner"].as_bool().unwrap() {
+                if self.is_miner {
                     // self.is_miner {
                     info!(
                         "Received burnchain block #{} including block_commit_op - {} ({})",
@@ -1757,14 +1757,14 @@ impl InitializedNeonNode {
         );
 
         //Gavin config
-        let f = File::open("./burninfo.json").unwrap();
-        println!("process_burnchain_state2 -> 文件打开成功：{:?}", f);
-        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
-        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
+//        let f = File::open("./burninfo.json").unwrap();
+//        println!("process_burnchain_state2 -> 文件打开成功：{:?}", f);
+//        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
+//        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
         for op in key_registers.into_iter() {
             if op.address == node_address {
-                if v["is_miner"].as_bool().unwrap() {
+                if self.is_miner {
                     //self.is_miner {
                     info!(
                         "Received burnchain block #{} including key_register_op - {}",

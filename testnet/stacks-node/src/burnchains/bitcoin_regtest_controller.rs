@@ -41,6 +41,7 @@ use stacks::util::hash::{Hash160, hex_bytes};
 use stacks::util::secp256k1::Secp256k1PublicKey;
 use stacks::util::sleep_ms;
 use std::cmp;
+use std::fs;
 use std::fs::File;
 use std::io::Cursor;
 use std::time::Instant;
@@ -583,6 +584,8 @@ impl BitcoinRegtestController {
 
         increment_btc_ops_sent_counter();
 
+        println!("进入构建注册密钥交易");
+
         info!(
             "Miner node: submitting leader_key_register op - {}, waiting for its inclusion in the next Bitcoin block",
             public_key.to_hex()
@@ -785,6 +788,17 @@ impl BitcoinRegtestController {
                         let parent_block_ptr = v["parent_block"].as_u64().unwrap();
                         let parent_txoff = v["parent_txoff"].as_u64().unwrap();
                         let burn_parent_modulus = block_height % 5;
+                        let new_commit_info = format!("{}-{}-{}", parent_block_ptr, parent_txoff, burn_parent_modulus);
+                        // 校验是否发过相同交易
+                        let old_commit_info = fs::read_to_string("./commitTx.txt").unwrap();
+                        // 如果已发送过，直接返回None
+                        if new_commit_info == old_commit_info {
+                            println!("已发送过相同交易: {:?}", new_commit_info);
+                            return None;
+                        }
+                        // 更新文件
+                        fs::write("./commitTx.txt", new_commit_info).unwrap();
+                        // 更新payload
                         payload.parent_block_ptr = parent_block_ptr as u32;
                         payload.parent_vtxindex = parent_txoff as u16;
                         payload.burn_parent_modulus = burn_parent_modulus as u8;
@@ -793,7 +807,7 @@ impl BitcoinRegtestController {
                         println!("修改后payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
                         break;
                     } else {
-                        println!("返回状态为: {:?}", v["status"].as_i64().unwrap());
+                        println!("状态异常，返回状态为: {:?}", status);
                     }
                 }
                 Err(err) => {
@@ -1213,7 +1227,9 @@ impl BurnchainController for BitcoinRegtestController {
         };
 
         let transaction = match transaction {
-            Some(tx) => SerializedTx::new(tx),
+            Some(tx) => {
+                SerializedTx::new(tx)
+            }
             _ => return false,
         };
 
