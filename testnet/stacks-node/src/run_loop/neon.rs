@@ -1,17 +1,11 @@
-use crate::{
-    genesis_data::USE_TEST_GENESIS_CHAINSTATE,
-    node::{get_account_balances, get_account_lockups, get_names, get_namespaces},
-    BitcoinRegtestController, BurnchainController, Config, EventDispatcher, Keychain,
-    NeonGenesisNode,
-};
+use stacks::burnchains::{Address, Burnchain};
 use stacks::burnchains::bitcoin::address::BitcoinAddress;
 use stacks::burnchains::bitcoin::address::BitcoinAddressType;
-use stacks::burnchains::{Address, Burnchain};
 use stacks::chainstate::burn::db::sortdb::SortitionDB;
-use stacks::chainstate::coordinator::comm::{CoordinatorChannels, CoordinatorReceivers};
 use stacks::chainstate::coordinator::{
     BlockEventDispatcher, ChainsCoordinator, CoordinatorCommunication,
 };
+use stacks::chainstate::coordinator::comm::{CoordinatorChannels, CoordinatorReceivers};
 use stacks::chainstate::stacks::boot;
 use stacks::chainstate::stacks::db::{ChainStateBootData, ClarityTx, StacksChainState};
 use stacks::net::atlas::{AtlasConfig, Attachment};
@@ -21,11 +15,16 @@ use std::sync::mpsc::sync_channel;
 use std::thread;
 use stx_genesis::GenesisData;
 
-use super::RunLoopCallbacks;
-
+use crate::{
+    BitcoinRegtestController,
+    BurnchainController,
+    Config, EventDispatcher, genesis_data::USE_TEST_GENESIS_CHAINSTATE, Keychain, NeonGenesisNode,
+    node::{get_account_balances, get_account_lockups, get_names, get_namespaces},
+};
 use crate::monitoring::start_serving_monitoring_metrics;
-
 use crate::syncctl::PoxSyncWatchdog;
+
+use super::RunLoopCallbacks;
 
 /// Coordinating a node running in neon mode.
 #[cfg(test)]
@@ -118,7 +117,7 @@ impl RunLoop {
                 BitcoinAddressType::PublicKeyHash,
                 &node_address.to_bytes(),
             )
-            .unwrap();
+                .unwrap();
             info!("Miner node: checking UTXOs at address: {}", btc_addr);
 
             let utxos = burnchain.get_utxos(&keychain.generate_op_signer().get_public_key(), 1);
@@ -199,7 +198,7 @@ impl RunLoop {
                     &params,
                     |_, _| false,
                 )
-                .expect("Failed to set burnchain parameters in PoX contract");
+                    .expect("Failed to set burnchain parameters in PoX contract");
             });
         });
         let mut boot_data = ChainStateBootData {
@@ -227,7 +226,7 @@ impl RunLoop {
             Some(&mut boot_data),
             block_limit,
         )
-        .unwrap();
+            .unwrap();
         coordinator_dispatcher.dispatch_boot_receipts(receipts);
 
         let atlas_config = AtlasConfig::default(mainnet);
@@ -259,7 +258,7 @@ impl RunLoop {
             self.config.node.pox_sync_sample_secs,
             self.config.node.pox_sync_sample_secs == 0,
         )
-        .unwrap();
+            .unwrap();
 
         // setup genesis
         // 初始化创世块信息
@@ -376,6 +375,9 @@ impl RunLoop {
                     block_height, burnchain_height
                 );
             }
+
+            println!("block height: {:?}", block_height);
+            println!("burnchain height: {:?}", burnchain_height);
 
             if block_height >= burnchain_height && !ibd {
                 // at tip, and not downloading. proceed to mine.
