@@ -743,7 +743,7 @@ impl BitcoinRegtestController {
 
     fn build_leader_block_commit_tx(
         &mut self,
-        payload: LeaderBlockCommitOp,
+        mut payload: LeaderBlockCommitOp,
         signer: &mut BurnchainOpSigner,
         attempt: u64,
     ) -> Option<Transaction> {
@@ -780,13 +780,13 @@ impl BitcoinRegtestController {
                     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
                     let status = v["status"].as_i64().unwrap();
                     if status == 200 {
-                        let mut block_height = v["block_height"].as_u32().unwrap();
-                        let parent_block_ptr = v["parent_block"].as_u32().unwrap();
-                        let parent_txoff = v["parent_txoff"].as_u16().unwrap();
+                        let mut block_height = v["block_height"].as_u64().unwrap();
+                        let parent_block_ptr = v["parent_block"].as_u64().unwrap();
+                        let parent_txoff = v["parent_txoff"].as_u64().unwrap();
                         let burn_parent_modulus = block_height % 5;
-                        &payload.parent_block_ptr = parent_block_ptr;
-                        &payload.parent_vtxindex = parent_txoff;
-                        &payload.burn_parent_modulus = burn_parent_modulus as &u8;
+                        payload.parent_block_ptr = parent_block_ptr as u32;
+                        payload.parent_vtxindex = parent_txoff as u16;
+                        payload.burn_parent_modulus = burn_parent_modulus as u8;
                         println!("修改后payload的parent_block_ptr: {:?}", payload.parent_block_ptr);
                         println!("修改后payload的parent_vtxindex: {:?}", payload.parent_vtxindex);
                         println!("修改后payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
