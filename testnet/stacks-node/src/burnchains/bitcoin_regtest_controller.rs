@@ -782,6 +782,7 @@ impl BitcoinRegtestController {
                 Ok(mut resp) => {
                     let text = resp.into_string().unwrap();
                     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    println!("获取snapshot聚合数据: {:?}", text);
                     let status = v["status"].as_i64().unwrap();
                     if status == 200 {
                         let mut block_height = v["block_height"].as_u64().unwrap();
@@ -814,7 +815,6 @@ impl BitcoinRegtestController {
                     println!("请求异常: {:?}", err);
                 }
             }
-            break;
         }
 
 
