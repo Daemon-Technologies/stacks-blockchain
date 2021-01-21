@@ -262,12 +262,14 @@ impl RunLoop {
         .unwrap();
 
         // setup genesis
+        // 初始化创世块信息
         let node = NeonGenesisNode::new(
             self.config.clone(),
             event_dispatcher,
             burnchain_config.clone(),
             Box::new(|_| {}),
         );
+        // 启动节点
         let mut node = if is_miner {
             node.into_initialized_leader_node(
                 burnchain_tip.clone(),

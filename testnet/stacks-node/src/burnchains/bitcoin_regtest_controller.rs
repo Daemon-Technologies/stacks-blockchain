@@ -1,34 +1,27 @@
-use async_std::io::ReadExt;
-use std::io::Cursor;
-use std::time::Instant;
-
 use async_h1::client;
+use async_std::io::ReadExt;
 use async_std::net::TcpStream;
 use base64::encode;
 use http_types::{Method, Request, Url};
-
+use isahc::prelude::*;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
-use std::cmp;
-
-use super::super::operations::BurnchainOpSigner;
-use super::super::Config;
-use super::{BurnchainController, BurnchainTip, Error as BurnchainControllerError};
-
+#[cfg(test)]
+use stacks::{burnchains::BurnchainHeaderHash, chainstate::burn::Opcodes};
+use stacks::burnchains::{Burnchain, BurnchainParameters};
 use stacks::burnchains::bitcoin::address::{BitcoinAddress, BitcoinAddressType};
+use stacks::burnchains::bitcoin::BitcoinNetworkType;
 use stacks::burnchains::bitcoin::indexer::{
     BitcoinIndexer, BitcoinIndexerConfig, BitcoinIndexerRuntime,
 };
 use stacks::burnchains::bitcoin::spv::SpvClient;
-use stacks::burnchains::bitcoin::BitcoinNetworkType;
-use stacks::burnchains::db::BurnchainDB;
-use stacks::burnchains::indexer::BurnchainIndexer;
 use stacks::burnchains::BurnchainStateTransitionOps;
+use stacks::burnchains::db::BurnchainDB;
 use stacks::burnchains::Error as burnchain_error;
+use stacks::burnchains::indexer::BurnchainIndexer;
 use stacks::burnchains::PoxConstants;
 use stacks::burnchains::PublicKey;
-use stacks::burnchains::{Burnchain, BurnchainParameters};
 use stacks::chainstate::burn::db::sortdb::SortitionDB;
 use stacks::chainstate::burn::operations::{
     BlockstackOperationType, LeaderBlockCommitOp, LeaderKeyRegisterOp, PreStxOp, TransferStxOp,
@@ -41,18 +34,19 @@ use stacks::deps::bitcoin::blockdata::transaction::{OutPoint, Transaction, TxIn,
 use stacks::deps::bitcoin::network::encodable::ConsensusEncodable;
 use stacks::deps::bitcoin::network::serialize::RawEncoder;
 use stacks::deps::bitcoin::util::hash::Sha256dHash;
+use stacks::monitoring::{increment_btc_blocks_received_counter, increment_btc_ops_sent_counter};
 use stacks::net::StacksMessageCodec;
-use stacks::util::hash::{hex_bytes, Hash160};
+use stacks::util::hash::{Hash160, hex_bytes};
 use stacks::util::secp256k1::Secp256k1PublicKey;
 use stacks::util::sleep_ms;
-
-use stacks::monitoring::{increment_btc_blocks_received_counter, increment_btc_ops_sent_counter};
-
+use std::cmp;
 use std::fs::File;
+use std::io::Cursor;
+use std::time::Instant;
 
-
-#[cfg(test)]
-use stacks::{burnchains::BurnchainHeaderHash, chainstate::burn::Opcodes};
+use super::{BurnchainController, BurnchainTip, Error as BurnchainControllerError};
+use super::super::Config;
+use super::super::operations::BurnchainOpSigner;
 
 pub struct BitcoinRegtestController {
     config: Config,
@@ -319,7 +313,7 @@ impl BitcoinRegtestController {
                     error!("Unable to sync with burnchain: {}", e);
                     match e {
                         burnchain_error::CoordinatorClosed => {
-                            return Err(BurnchainControllerError::CoordinatorClosed)
+                            return Err(BurnchainControllerError::CoordinatorClosed);
                         }
                         burnchain_error::TrySyncAgain => {
                             // try again immediately
@@ -773,6 +767,39 @@ impl BitcoinRegtestController {
         println!("burn_fee_cap_from_file: {:?}. payload.burn_fee: {:?}", v["burn_fee_cap"].as_u64().unwrap(), payload.burn_fee);
         println!("sats_per_bytes: {:?}", v["sats_per_bytes"].as_u64().unwrap());
 
+        // TODO 修改payload，确保交易合法性
+        println!("原始payload的parent_block_ptr: {:?}", payload.parent_block_ptr);
+        println!("原始payload的parent_vtxindex: {:?}", payload.parent_vtxindex);
+        println!("原始payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
+        loop {
+            let response = isahc::get("https://localhost:8889/snapshotIntegrate");
+            match response {
+                Ok(mut resp) => {
+                    let text = resp.text().unwrap();
+                    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    let status = v["status"].as_i64().unwrap();
+                    if status == 200 {
+                        let mut block_height = v["block_height"].as_u32().unwrap();
+                        let parent_block_ptr = v["parent_block"].as_u32().unwrap();
+                        let parent_txoff = v["parent_txoff"].as_u16().unwrap();
+                        let burn_parent_modulus = block_height % 5;
+                        &payload.parent_block_ptr = parent_block_ptr;
+                        &payload.parent_vtxindex = parent_txoff;
+                        &payload.burn_parent_modulus = burn_parent_modulus as &u8;
+                        println!("修改后payload的parent_block_ptr: {:?}", parent_block_ptr);
+                        println!("修改后payload的parent_vtxindex: {:?}", parent_txoff);
+                        println!("修改后payload的burn_parent_modulus: {:?}", burn_parent_modulus);
+                        break;
+                    }
+                }
+                Err(_) => {
+                    println!("error");
+                }
+            }
+            break;
+        }
+
+
         //let btc_miner_fee = self.config.burnchain.block_commit_tx_estimated_size
         //    * self.config.burnchain.satoshis_per_byte;
         //350 * sats per bytes
@@ -1185,8 +1212,9 @@ impl BurnchainController for BitcoinRegtestController {
             Some(tx) => SerializedTx::new(tx),
             _ => return false,
         };
-
-        self.send_transaction(transaction)
+        println!("进入发送交易");
+        false
+//        self.send_transaction(transaction)
     }
 
     #[cfg(test)]
@@ -1519,7 +1547,7 @@ impl BitcoinRPCRequest {
                 return Err(RPCError::Network(format!("RPC Error: {}", err)));
             }
         };
-        
+
         println!("提交的交易vec类型表达为: {:?}", body);
 
         request
@@ -1534,7 +1562,7 @@ impl BitcoinRPCRequest {
                     return Err(RPCError::Network(format!(
                         "Bitcoin RPC: connection failed - {:?}",
                         err
-                    )))
+                    )));
                 }
             };
 
@@ -1544,7 +1572,7 @@ impl BitcoinRPCRequest {
                     return Err(RPCError::Network(format!(
                         "Bitcoin RPC: invoking procedure failed - {:?}",
                         err
-                    )))
+                    )));
                 }
             }
         })?;
