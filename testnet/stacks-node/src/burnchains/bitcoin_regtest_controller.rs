@@ -792,10 +792,12 @@ impl BitcoinRegtestController {
                         println!("修改后payload的parent_vtxindex: {:?}", payload.parent_vtxindex);
                         println!("修改后payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
                         break;
+                    } else {
+                        println!("返回状态为: {:?}", v["status"].as_i64().unwrap());
                     }
                 }
-                Err(_) => {
-                    println!("error");
+                Err(err) => {
+                    println!("请求异常: {:?}", err);
                 }
             }
             break;
@@ -1218,7 +1220,6 @@ impl BurnchainController for BitcoinRegtestController {
         println!("进入发送交易");
         false
 //        self.send_transaction(transaction)
-
     }
 
     #[cfg(test)]
@@ -1546,7 +1547,7 @@ impl BitcoinRPCRequest {
             }
         };
 
-        println!("提交的交易vec类型表达为: {:?}", body);
+//        println!("提交的交易vec类型表达为: {:?}", body);
 
         request
             .append_header("Content-Type", "application/json")
@@ -1605,7 +1606,7 @@ impl BitcoinRPCRequest {
 
         let payload = serde_json::from_slice::<serde_json::Value>(&buffer[..])
             .map_err(|e| RPCError::Parsing(format!("Bitcoin RPC: {}", e)))?;
-        println!("交易返回为: {:?}", payload);
+//        println!("交易返回为: {:?}", payload);
         Ok(payload)
     }
 }
