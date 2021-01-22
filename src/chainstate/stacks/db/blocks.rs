@@ -14,76 +14,57 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use rand::RngCore;
+use rand::thread_rng;
+use rusqlite::{Error as sqlite_error, OptionalExtension};
+use rusqlite::Connection;
+use rusqlite::DatabaseName;
+
+use chainstate::burn::BlockSnapshot;
+use chainstate::burn::db::sortdb::*;
+use chainstate::burn::operations::*;
+use chainstate::stacks::*;
+use chainstate::stacks::db::*;
+use chainstate::stacks::db::accounts::MinerReward;
+use chainstate::stacks::db::transactions::TransactionNonceMismatch;
+use chainstate::stacks::Error;
+use chainstate::stacks::index::MarfTrieId;
+use core::*;
+use core::mempool::MAXIMUM_MEMPOOL_TX_CHAINING;
+use net::BlocksInvData;
+use net::Error as net_error;
+use net::MAX_MESSAGE_LEN;
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::io::prelude::*;
 use std::io::{Read, Seek, SeekFrom, Write};
-
-use rusqlite::Connection;
-use rusqlite::DatabaseName;
-
-use core::mempool::MAXIMUM_MEMPOOL_TX_CHAINING;
-use core::*;
-
-use chainstate::burn::operations::*;
-
-use chainstate::stacks::db::accounts::MinerReward;
-use chainstate::stacks::db::transactions::TransactionNonceMismatch;
-use chainstate::stacks::db::*;
-use chainstate::stacks::index::MarfTrieId;
-use chainstate::stacks::Error;
-use chainstate::stacks::*;
-
-use chainstate::burn::BlockSnapshot;
-
+use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-
-use util::db::Error as db_error;
 use util::db::{
-    query_count, query_int, query_row, query_row_columns, query_row_panic, query_rows,
-    tx_busy_handler, DBConn, FromColumn, FromRow,
+    DBConn, FromColumn, FromRow, query_count, query_int, query_row,
+    query_row_columns, query_row_panic, query_rows, tx_busy_handler,
 };
-
+use util::db::Error as db_error;
 use util::db::u64_to_sql;
 use util::get_epoch_time_secs;
 use util::hash::to_hex;
-use util::strings::StacksString;
-
 use util::retry::BoundReader;
-
-use chainstate::burn::db::sortdb::*;
-
-use net::BlocksInvData;
-use net::Error as net_error;
-use net::MAX_MESSAGE_LEN;
-
+use util::strings::StacksString;
+pub use vm::analysis::errors::{CheckError, CheckErrors};
+use vm::analysis::run_analysis;
+use vm::ast::build_ast;
+use vm::clarity::{ClarityBlockConnection, ClarityConnection, ClarityInstance};
+use vm::contexts::AssetMap;
+use vm::contracts::Contract;
+use vm::costs::LimitedCostTracker;
+use vm::database::{BurnStateDB, ClarityDatabase, NULL_BURN_STATE_DB, NULL_HEADER_DB};
 use vm::types::{
     AssetIdentifier, PrincipalData, QualifiedContractIdentifier, SequenceData,
     StandardPrincipalData, TupleData, TypeSignature, Value,
 };
-
-use vm::contexts::AssetMap;
-
-use vm::analysis::run_analysis;
-use vm::ast::build_ast;
-
-use vm::clarity::{ClarityBlockConnection, ClarityConnection, ClarityInstance};
-
-pub use vm::analysis::errors::{CheckError, CheckErrors};
-
-use vm::database::{BurnStateDB, ClarityDatabase, NULL_BURN_STATE_DB, NULL_HEADER_DB};
-
-use vm::contracts::Contract;
-use vm::costs::LimitedCostTracker;
-
-use rand::thread_rng;
-use rand::RngCore;
-
-use rusqlite::{Error as sqlite_error, OptionalExtension};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StagingMicroblock {
@@ -189,12 +170,12 @@ impl MemPoolRejection {
                                                 "actual": actual})),
             ),
             BadNonces(TransactionNonceMismatch {
-                expected,
-                actual,
-                principal,
-                is_origin,
-                ..
-            }) => (
+                          expected,
+                          actual,
+                          principal,
+                          is_origin,
+                          ..
+                      }) => (
                 "BadNonce",
                 Some(json!({
                      "expected": expected,
@@ -393,7 +374,7 @@ impl BlockStreamData {
             &chainstate.db(),
             &tail_index_microblock_hash,
         )?
-        .ok_or(Error::NoSuchBlockError)?;
+            .ok_or(Error::NoSuchBlockError)?;
 
         let parent_index_block_hash = StacksBlockHeader::make_index_block_hash(
             &mblock_info.consensus_hash,
@@ -430,7 +411,7 @@ impl BlockStreamData {
             &anchored_index_block_hash,
             seq,
         )?
-        .ok_or(Error::NoSuchBlockError)?;
+            .ok_or(Error::NoSuchBlockError)?;
 
         Ok(BlockStreamData {
             index_block_hash: anchored_index_block_hash.clone(),
@@ -573,8 +554,8 @@ impl StacksChainState {
         delete_on_error: bool,
         mut writer: F,
     ) -> Result<(), Error>
-    where
-        F: FnMut(&mut fs::File) -> Result<(), Error>,
+        where
+            F: FnMut(&mut fs::File) -> Result<(), Error>,
     {
         let path_tmp = format!("{}.tmp", path);
         let mut fd = fs::OpenOptions::new()
@@ -795,7 +776,7 @@ impl StacksChainState {
                 &list_microblock_sql,
                 &list_microblock_args,
             )
-            .map_err(Error::DBError)?;
+                .map_err(Error::DBError)?;
 
             let microblock_hashes = microblocks.drain(..).map(|mb| mb.microblock_hash).collect();
             ret.push((consensus_hash, block_hash, microblock_hashes));
@@ -900,9 +881,9 @@ impl StacksChainState {
         sql_query: &String,
         sql_args: P,
     ) -> Result<Vec<Vec<u8>>, Error>
-    where
-        P: IntoIterator,
-        P::Item: ToSql,
+        where
+            P: IntoIterator,
+            P::Item: ToSql,
     {
         let mut stmt = conn
             .prepare(sql_query)
@@ -1185,10 +1166,10 @@ impl StacksChainState {
                     Some(mblock_data) => StacksMicroblock::consensus_deserialize(
                         &mut &mblock_data[..],
                     )
-                    .expect(&format!(
-                        "CORRUPTION: failed to parse microblock data for {}/{}-{}",
-                        parent_consensus_hash, parent_anchored_block_hash, &mblock_hash,
-                    )),
+                        .expect(&format!(
+                            "CORRUPTION: failed to parse microblock data for {}/{}-{}",
+                            parent_consensus_hash, parent_anchored_block_hash, &mblock_hash,
+                        )),
                     None => {
                         debug!(
                             "No such microblock (processed={}): {}/{}-{} ({})",
@@ -1342,10 +1323,10 @@ impl StacksChainState {
                 blocks_conn,
                 &staging_microblocks[i].microblock_hash,
             )?
-            .expect(&format!(
-                "BUG: have record for {}-{} but no data",
-                &parent_index_block_hash, &staging_microblocks[i].microblock_hash
-            ));
+                .expect(&format!(
+                    "BUG: have record for {}-{} but no data",
+                    &parent_index_block_hash, &staging_microblocks[i].microblock_hash
+                ));
 
             let mblock = match StacksMicroblock::consensus_deserialize(&mut &mblock_data[..]) {
                 Ok(mb) => mb,
@@ -1403,10 +1384,10 @@ impl StacksChainState {
             seq,
             seq,
         )
-        .and_then(|list_opt| match list_opt {
-            Some(mut list) => Ok(list.pop()),
-            None => Ok(None),
-        })
+            .and_then(|list_opt| match list_opt {
+                Some(mut list) => Ok(list.pop()),
+                None => Ok(None),
+            })
     }
 
     /// stacks_block _must_ have been committed, or this will return an error
@@ -1474,7 +1455,7 @@ impl StacksChainState {
                     &ancestor.consensus_hash,
                     &ancestor.winning_stacks_block_hash,
                 )?
-                .map(|header| (header, ancestor.consensus_hash));
+                    .map(|header| (header, ancestor.consensus_hash));
 
                 return Ok(ret);
             }
@@ -1519,7 +1500,7 @@ impl StacksChainState {
                 has_parent_args,
                 "anchored_block_hash",
             )
-            .map_err(Error::DBError)?;
+                .map_err(Error::DBError)?;
             if rows.len() > 0 {
                 // still have unprocessed parent -- this block is not attachable
                 debug!(
@@ -1715,11 +1696,9 @@ impl StacksChainState {
             .and_then(|processed| {
                 if processed.len() == 0 {
                     Ok(None)
-                }
-                else if processed.len() == 1 {
+                } else if processed.len() == 1 {
                     Ok(Some(processed[0] != 0))
-                }
-                else {
+                } else {
                     Err(Error::DBError(db_error::Overflow))
                 }
             })
@@ -1735,11 +1714,9 @@ impl StacksChainState {
             .and_then(|orphaned| {
                 if orphaned.len() == 0 {
                     Ok(false)
-                }
-                else if orphaned.len() == 1 {
+                } else if orphaned.len() == 1 {
                     Ok(orphaned[0] != 0)
-                }
-                else {
+                } else {
                     Err(Error::DBError(db_error::Overflow))
                 }
             })
@@ -1760,11 +1737,9 @@ impl StacksChainState {
             .and_then(|processed| {
                 if processed.len() == 0 {
                     Ok(None)
-                }
-                else if processed.len() == 1 {
+                } else if processed.len() == 1 {
                     Ok(Some(processed[0] != 0))
-                }
-                else {
+                } else {
                     Err(Error::DBError(db_error::Overflow))
                 }
             })
@@ -1957,7 +1932,7 @@ impl StacksChainState {
             find_orphaned_microblocks_args,
             "microblock_hash",
         )
-        .map_err(Error::DBError)?;
+            .map_err(Error::DBError)?;
 
         // drop microblocks (this processes them)
         let update_microblock_children_sql = "UPDATE staging_microblocks SET orphaned = 1, processed = 1 WHERE consensus_hash = ?1 AND anchored_block_hash = ?2".to_string();
@@ -1973,7 +1948,7 @@ impl StacksChainState {
             &update_microblock_children_sql,
             update_microblock_children_args,
         )
-        .map_err(|e| Error::DBError(db_error::SqliteError(e)))?;
+            .map_err(|e| Error::DBError(db_error::SqliteError(e)))?;
 
         for mblock_hash in orphaned_microblock_hashes {
             StacksChainState::delete_microblock_data(tx, &mblock_hash)?;
@@ -2053,7 +2028,7 @@ impl StacksChainState {
                         anchored_block_hash,
                         StacksBlockHeader::make_index_block_hash(
                             &consensus_hash,
-                            &anchored_block_hash
+                            &anchored_block_hash,
                         )
                     );
                 } else {
@@ -2170,7 +2145,7 @@ impl StacksChainState {
             &update_microblock_children_sql,
             update_microblock_children_args,
         )
-        .map_err(|e| Error::DBError(db_error::SqliteError(e)))?;
+            .map_err(|e| Error::DBError(db_error::SqliteError(e)))?;
 
         // find all orphaned microblocks hashes, and delete the block data
         let find_orphaned_microblocks_sql = "SELECT microblock_hash FROM staging_microblocks WHERE anchored_block_hash = ?1 AND sequence >= ?2".to_string();
@@ -2181,7 +2156,7 @@ impl StacksChainState {
             find_orphaned_microblocks_args,
             "microblock_hash",
         )
-        .map_err(Error::DBError)?;
+            .map_err(Error::DBError)?;
 
         // garbage-collect
         for mblock_hash in orphaned_microblock_hashes.iter() {
@@ -2295,11 +2270,9 @@ impl StacksChainState {
             .and_then(|processed| {
                 if processed.len() == 0 {
                     Ok(false)
-                }
-                else if processed.len() == 1 {
+                } else if processed.len() == 1 {
                     Ok(processed[0] == 0)
-                }
-                else {
+                } else {
                     Err(Error::DBError(db_error::Overflow))
                 }
             })
@@ -2392,7 +2365,7 @@ impl StacksChainState {
             "SELECT processed FROM staging_microblocks WHERE index_block_hash = ?1 LIMIT 1",
             &[&parent_index_block_hash],
         )
-        .and_then(|processed| Ok(processed.len() > 0))
+            .and_then(|processed| Ok(processed.len() > 0))
     }
 
     /// Given an index block hash, get the consensus hash and block hash
@@ -2976,27 +2949,27 @@ impl StacksChainState {
         let block_hash = block.block_hash();
         let (block_commit, stacks_chain_tip) = match db_handle
             .get_block_snapshot_of_parent_stacks_block(consensus_hash, &block_hash)
-        {
-            Ok(Some(bc)) => bc,
-            Ok(None) => {
-                // unsoliciated
-                warn!(
-                    "Received unsolicited block: {}/{}",
-                    consensus_hash, block_hash
-                );
-                return Ok(None);
-            }
-            Err(db_error::InvalidPoxSortition) => {
-                warn!(
-                    "Received unsolicited block on non-canonical PoX fork: {}/{}",
-                    consensus_hash, block_hash
-                );
-                return Ok(None);
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        };
+            {
+                Ok(Some(bc)) => bc,
+                Ok(None) => {
+                    // unsoliciated
+                    warn!(
+                        "Received unsolicited block: {}/{}",
+                        consensus_hash, block_hash
+                    );
+                    return Ok(None);
+                }
+                Err(db_error::InvalidPoxSortition) => {
+                    warn!(
+                        "Received unsolicited block on non-canonical PoX fork: {}/{}",
+                        consensus_hash, block_hash
+                    );
+                    return Ok(None);
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            };
 
         // burn chain tip that selected this commit's block
         let burn_chain_tip = db_handle
@@ -3498,7 +3471,7 @@ impl StacksChainState {
             &sql,
             &[&u64_to_sql(min_arrival_time)?, &u64_to_sql(limit)?],
         )
-        .map_err(Error::DBError)?;
+            .map_err(Error::DBError)?;
         Ok(cnt as u64)
     }
 
@@ -3515,7 +3488,7 @@ impl StacksChainState {
             &sql,
             &[&u64_to_sql(min_arrival_time)?, &u64_to_sql(limit)?],
         )
-        .map_err(Error::DBError)?;
+            .map_err(Error::DBError)?;
         Ok(cnt as u64)
     }
 
@@ -3701,13 +3674,13 @@ impl StacksChainState {
                 &anchored_block_hash,
                 false,
             )
-            .map_err(|e| {
-                warn!(
-                    "Failed to orphan {}/{}: {:?}",
-                    &consensus_hash, &anchored_block_hash, &e
-                );
-                e
-            });
+                .map_err(|e| {
+                    warn!(
+                        "Failed to orphan {}/{}: {:?}",
+                        &consensus_hash, &anchored_block_hash, &e
+                    );
+                    e
+                });
         }
 
         // no blocks available
@@ -4006,22 +3979,22 @@ impl StacksChainState {
                     &miner.parent_block_hash,
                 ),
             )?
-            .pop()
-            .unwrap_or_else(|| {
-                if miner.parent_consensus_hash == FIRST_BURNCHAIN_CONSENSUS_HASH
-                    && miner.parent_block_hash == FIRST_STACKS_BLOCK_HASH
-                {
-                    MinerPaymentSchedule::genesis(mainnet)
-                } else {
-                    panic!(
-                        "CORRUPTION: parent {}/{} of {}/{} not found in DB",
-                        &miner.parent_consensus_hash,
-                        &miner.parent_block_hash,
-                        &miner.consensus_hash,
-                        &miner.block_hash
-                    );
-                }
-            })
+                .pop()
+                .unwrap_or_else(|| {
+                    if miner.parent_consensus_hash == FIRST_BURNCHAIN_CONSENSUS_HASH
+                        && miner.parent_block_hash == FIRST_STACKS_BLOCK_HASH
+                    {
+                        MinerPaymentSchedule::genesis(mainnet)
+                    } else {
+                        panic!(
+                            "CORRUPTION: parent {}/{} of {}/{} not found in DB",
+                            &miner.parent_consensus_hash,
+                            &miner.parent_block_hash,
+                            &miner.consensus_hash,
+                            &miner.block_hash
+                        );
+                    }
+                })
         } else {
             MinerPaymentSchedule::genesis(mainnet)
         };
@@ -4129,10 +4102,10 @@ impl StacksChainState {
                 &burn_dbconn.tx(),
                 &chain_tip_consensus_hash,
             )?
-            .expect(
-                "BUG: Failed to load snapshot for block snapshot during Stacks block processing",
-            )
-            .parent_burn_header_hash;
+                .expect(
+                    "BUG: Failed to load snapshot for block snapshot during Stacks block processing",
+                )
+                .parent_burn_header_hash;
             let stacking_burn_ops =
                 SortitionDB::get_stack_stx_ops(&burn_dbconn.tx(), &parent_burn_hash)?;
             let transfer_burn_ops =
@@ -4145,10 +4118,10 @@ impl StacksChainState {
                     &parent_block_hash,
                 ),
             )?
-            .expect(&format!(
-                "BUG: no execution cost found for parent block {}/{}",
-                parent_consensus_hash, parent_block_hash
-            ));
+                .expect(&format!(
+                    "BUG: no execution cost found for parent block {}/{}",
+                    parent_consensus_hash, parent_block_hash
+                ));
 
             let mut clarity_tx = StacksChainState::chainstate_block_begin(
                 chainstate_tx,
@@ -4291,7 +4264,7 @@ impl StacksChainState {
             // grant matured miner rewards
             let new_liquid_miner_ustx =
                 if let Some((ref miner_reward, ref user_rewards, ref parent_miner_reward, _)) =
-                    matured_miner_rewards_opt.as_ref()
+                matured_miner_rewards_opt.as_ref()
                 {
                     // grant in order by miner, then users
                     StacksChainState::process_matured_miner_rewards(
@@ -4309,7 +4282,7 @@ impl StacksChainState {
             // obtain reward info for receipt
             let (matured_rewards, matured_rewards_info) =
                 if let Some((miner_reward, mut user_rewards, parent_reward, reward_ptr)) =
-                    matured_miner_rewards_opt
+                matured_miner_rewards_opt
                 {
                     let mut ret = vec![];
                     ret.push(miner_reward);
@@ -4380,8 +4353,8 @@ impl StacksChainState {
                 burn_dbconn.tx(),
                 chain_tip_consensus_hash,
             )?
-            .expect("CORRUPTION: failed to load snapshot that elected processed block")
-            .accumulated_coinbase_ustx;
+                .expect("CORRUPTION: failed to load snapshot that elected processed block")
+                .accumulated_coinbase_ustx;
 
             let coinbase_at_block = StacksChainState::get_coinbase_reward(
                 chain_tip_burn_header_height as u64,
@@ -4405,7 +4378,7 @@ impl StacksChainState {
                 burnchain_sortition_burn,
                 total_coinbase,
             )
-            .expect("FATAL: parsed and processed a block without a coinbase");
+                .expect("FATAL: parsed and processed a block without a coinbase");
 
             receipts.extend(microblock_txs_receipts.into_iter());
 
@@ -4439,7 +4412,7 @@ impl StacksChainState {
             &block_execution_cost,
             block_size,
         )
-        .expect("FATAL: failed to advance chain tip");
+            .expect("FATAL: failed to advance chain tip");
 
         chainstate_tx.log_transactions_processed(&new_tip.index_block_hash(), &tx_receipts);
 
@@ -4511,8 +4484,8 @@ impl StacksChainState {
                         &FIRST_BURNCHAIN_CONSENSUS_HASH,
                         &FIRST_STACKS_BLOCK_HASH,
                     )
-                    .expect("FATAL: failed to load initial block header")
-                    .expect("FATAL: initial block header not found in headers DB")
+                        .expect("FATAL: failed to load initial block header")
+                        .expect("FATAL: initial block header not found in headers DB")
                 } else {
                     // no parent stored
                     debug!(
@@ -4982,6 +4955,7 @@ impl StacksChainState {
         let (consensus_hash, block_bhh) =
             SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
         let sql = "SELECT * FROM staging_blocks WHERE processed = 1 AND orphaned = 0 AND consensus_hash = ?1 AND anchored_block_hash = ?2";
+        println!("调用get_stacks_chain_tip进行{:?}查询, consensus_hash:{:?},block_bhh:{:?}", sql, consensus_hash, block_bhh);
         let args: &[&dyn ToSql] = &[&consensus_hash, &block_bhh];
         query_row(&self.db(), sql, args).map_err(Error::DBError)
     }
@@ -5072,13 +5046,13 @@ impl StacksChainState {
                             tx_size,
                         )
                     })
-                    .map_err(|_| {
-                        MemPoolRejection::NoSuchChainTip(
-                            current_consensus_hash.clone(),
-                            current_block.clone(),
-                        )
-                    })?
-                    .expect("BUG: do not have unconfirmed state, despite being Some(..)")
+                        .map_err(|_| {
+                            MemPoolRejection::NoSuchChainTip(
+                                current_consensus_hash.clone(),
+                                current_block.clone(),
+                            )
+                        })?
+                        .expect("BUG: do not have unconfirmed state, despite being Some(..)")
                 } else {
                     Err(MemPoolRejection::BadNonces(mismatch_error))
                 }
@@ -5208,11 +5182,11 @@ impl StacksChainState {
                 }
             }
             TransactionPayload::ContractCall(TransactionContractCall {
-                address,
-                contract_name,
-                function_name,
-                function_args,
-            }) => {
+                                                 address,
+                                                 contract_name,
+                                                 function_name,
+                                                 function_args,
+                                             }) => {
                 // version byte matches?
                 if !StacksChainState::is_valid_address_version(
                     chainstate_config.mainnet,
@@ -5279,34 +5253,33 @@ impl StacksChainState {
 
 #[cfg(test)]
 pub mod test {
-    use super::*;
-    use chainstate::stacks::db::test::*;
-    use chainstate::stacks::db::*;
-    use chainstate::stacks::miner::test::*;
-    use chainstate::stacks::test::*;
-    use chainstate::stacks::Error as chainstate_error;
-    use chainstate::stacks::*;
+    use rand::Rng;
+    use rand::thread_rng;
 
     use burnchains::*;
-    use chainstate::burn::db::sortdb::*;
     use chainstate::burn::*;
+    use chainstate::burn::db::sortdb::*;
+    use chainstate::stacks::*;
+    use chainstate::stacks::db::*;
+    use chainstate::stacks::db::test::*;
+    use chainstate::stacks::Error as chainstate_error;
+    use chainstate::stacks::miner::test::*;
+    use chainstate::stacks::test::*;
+    use core::mempool::*;
+    use net::test::*;
     use std::fs;
-    use util::db::Error as db_error;
     use util::db::*;
+    use util::db::Error as db_error;
     use util::hash::*;
     use util::retry::*;
 
-    use core::mempool::*;
-    use net::test::*;
-
-    use rand::thread_rng;
-    use rand::Rng;
+    use super::*;
 
     pub fn make_empty_coinbase_block(mblock_key: &StacksPrivateKey) -> StacksBlock {
         let privk = StacksPrivateKey::from_hex(
             "59e4d5e18351d6027a37920efe53c2f1cbadc50dca7d77169b7291dff936ed6d01",
         )
-        .unwrap();
+            .unwrap();
         let auth = TransactionAuth::from_p2pkh(&privk).unwrap();
         let proof_bytes = hex_bytes("9275df67a68c8745c0ff97b48201ee6db447f7c93b23ae24cdc2400f52fdb08a1a6ac7ec71bf9c9c76e96ee4675ebff60625af28718501047bfd87b810c2d2139b73c23bd69de66360953a642c2a330a").unwrap();
         let proof = VRFProof::from_bytes(&proof_bytes[..].to_vec()).unwrap();
@@ -5371,7 +5344,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "59e4d5e18351d6027a37920efe53c2f1cbadc50dca7d77169b7291dff936ed6d01",
         )
-        .unwrap();
+            .unwrap();
         let auth = TransactionAuth::from_p2pkh(&privk).unwrap();
         let proof_bytes = hex_bytes("9275df67a68c8745c0ff97b48201ee6db447f7c93b23ae24cdc2400f52fdb08a1a6ac7ec71bf9c9c76e96ee4675ebff60625af28718501047bfd87b810c2d2139b73c23bd69de66360953a642c2a330a").unwrap();
         let proof = VRFProof::from_bytes(&proof_bytes[..].to_vec()).unwrap();
@@ -5406,7 +5379,7 @@ pub mod test {
                 &format!("hello-world-{}", &thread_rng().gen::<u32>()),
                 &contract_16k.to_string(),
             )
-            .unwrap(),
+                .unwrap(),
         );
 
         tx_big_contract.anchor_mode = TransactionAnchorMode::OnChainOnly;
@@ -5492,7 +5465,7 @@ pub mod test {
                     &format!("hello-world-{}", &thread_rng().gen::<u32>()),
                     &contract_16k.to_string(),
                 )
-                .unwrap(),
+                    .unwrap(),
             );
 
             tx_big_contract.anchor_mode = TransactionAnchorMode::OffChainOnly;
@@ -5574,29 +5547,29 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
         assert_eq!(
             StacksChainState::load_staging_block_data(
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             *block
         );
         assert_eq!(
             StacksChainState::get_staging_block_status(
                 &chainstate.db(),
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             false
         );
 
@@ -5617,17 +5590,17 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap());
+            .unwrap());
         assert_eq!(
             StacksChainState::load_staging_block_pubkey_hash(
                 &chainstate.db(),
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             block.header.microblock_pubkey_hash
         );
     }
@@ -5641,49 +5614,49 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap());
+            .unwrap());
         assert!(StacksChainState::load_block(
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         assert!(StacksChainState::load_block_header(
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         assert!(StacksChainState::load_staging_block_pubkey_hash(
             &chainstate.db(),
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         assert_eq!(
             StacksChainState::get_staging_block_status(
                 &chainstate.db(),
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             true
         );
         assert!(StacksChainState::load_staging_block_data(
             &chainstate.db(),
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         let index_block_hash =
             StacksBlockHeader::make_index_block_hash(consensus_hash, &block.block_hash());
@@ -5702,62 +5675,62 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap());
+            .unwrap());
         assert!(StacksChainState::load_block(
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
         assert_eq!(
             StacksChainState::load_block(
                 &chainstate.blocks_path,
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             *block
         );
         assert_eq!(
             StacksChainState::load_block_header(
                 &chainstate.blocks_path,
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             block.header
         );
         assert!(StacksChainState::load_staging_block_pubkey_hash(
             &chainstate.db(),
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         assert_eq!(
             StacksChainState::get_staging_block_status(
                 &chainstate.db(),
                 consensus_hash,
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             true
         );
         assert!(StacksChainState::load_staging_block_data(
             &chainstate.db(),
             &chainstate.blocks_path,
             consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         let index_block_hash =
             StacksBlockHeader::make_index_block_hash(consensus_hash, &block.block_hash());
@@ -5787,7 +5760,7 @@ pub mod test {
             sortition_burn,
             5,
         )
-        .unwrap();
+            .unwrap();
         tx.commit().unwrap();
 
         let index_block_hash =
@@ -5811,7 +5784,7 @@ pub mod test {
             parent_anchored_block_hash,
             microblock,
         )
-        .unwrap();
+            .unwrap();
         tx.commit().unwrap();
 
         let parent_index_block_hash = StacksBlockHeader::make_index_block_hash(
@@ -5846,7 +5819,7 @@ pub mod test {
             anchored_block_hash,
             accept,
         )
-        .unwrap();
+            .unwrap();
         tx.commit().unwrap();
 
         assert!(
@@ -5870,8 +5843,8 @@ pub mod test {
                 &chainstate.db(),
                 &child_index_block_hash,
             )
-            .unwrap()
-            .unwrap();
+                .unwrap()
+                .unwrap();
         let parent_index_block_hash =
             StacksBlockHeader::make_index_block_hash(&parent_consensus_hash, &parent_block_hash);
 
@@ -5886,7 +5859,7 @@ pub mod test {
             child_anchored_block_hash,
             &tail_microblock_hash,
         )
-        .unwrap();
+            .unwrap();
         tx.commit().unwrap();
 
         assert!(chainstate
@@ -5894,9 +5867,9 @@ pub mod test {
             .unwrap());
         assert!(StacksChainState::has_processed_microblocks_indexed(
             chainstate.db(),
-            &parent_microblock_index_hash
+            &parent_microblock_index_hash,
         )
-        .unwrap());
+            .unwrap());
     }
 
     fn process_next_orphaned_staging_block(chainstate: &mut StacksChainState) -> bool {
@@ -5923,7 +5896,7 @@ pub mod test {
             anchored_block_hash,
             invalid_microblock,
         )
-        .unwrap();
+            .unwrap();
         tx.commit().unwrap();
     }
 
@@ -5937,37 +5910,37 @@ pub mod test {
             &ConsensusHash([1u8; 20]),
             &BlockHeaderHash([2u8; 32]),
         )
-        .unwrap();
+            .unwrap();
         assert!(fs::metadata(&path).is_err());
         assert!(!StacksChainState::has_stored_block(
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &BlockHeaderHash([2u8; 32])
+            &BlockHeaderHash([2u8; 32]),
         )
-        .unwrap());
+            .unwrap());
 
         StacksChainState::store_empty_block(
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
             &BlockHeaderHash([2u8; 32]),
         )
-        .unwrap();
+            .unwrap();
         assert!(fs::metadata(&path).is_ok());
         assert!(StacksChainState::has_stored_block(
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &BlockHeaderHash([2u8; 32])
+            &BlockHeaderHash([2u8; 32]),
         )
-        .unwrap());
+            .unwrap());
         assert!(StacksChainState::load_block(
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &BlockHeaderHash([2u8; 32])
+            &BlockHeaderHash([2u8; 32]),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -5976,7 +5949,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let mut block = make_empty_coinbase_block(&privk);
 
@@ -5989,15 +5962,15 @@ pub mod test {
             &ConsensusHash([1u8; 20]),
             &block.block_hash(),
         )
-        .unwrap();
+            .unwrap();
         assert!(fs::metadata(&path).is_err());
         assert!(!StacksChainState::has_stored_block(
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap());
+            .unwrap());
 
         StacksChainState::store_block(&chainstate.blocks_path, &ConsensusHash([1u8; 20]), &block)
             .unwrap();
@@ -6006,34 +5979,34 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap());
+            .unwrap());
         assert!(StacksChainState::load_block(
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
         assert_eq!(
             StacksChainState::load_block(
                 &chainstate.blocks_path,
                 &ConsensusHash([1u8; 20]),
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             block
         );
         assert_eq!(
             StacksChainState::load_block_header(
                 &chainstate.blocks_path,
                 &ConsensusHash([1u8; 20]),
-                &block.block_hash()
+                &block.block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             block.header
         );
 
@@ -6047,23 +6020,23 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap());
+            .unwrap());
         assert!(StacksChainState::load_block(
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         assert!(StacksChainState::load_block_header(
             &chainstate.blocks_path,
             &ConsensusHash([1u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -6076,7 +6049,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
 
@@ -6084,10 +6057,10 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([2u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         store_staging_block(
             &mut chainstate,
@@ -6131,7 +6104,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
 
@@ -6139,10 +6112,10 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([2u8; 20]),
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         store_staging_block(
             &mut chainstate,
@@ -6183,7 +6156,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let microblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -6192,9 +6165,9 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &ConsensusHash([2u8; 20]),
-            &microblocks[0].block_hash()
+            &microblocks[0].block_hash(),
         )
-        .unwrap());
+            .unwrap());
 
         assert!(StacksChainState::load_microblock_stream_fork(
             &chainstate.db(),
@@ -6202,8 +6175,8 @@ pub mod test {
             &block.block_hash(),
             &microblocks.last().as_ref().unwrap().block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         for mblock in microblocks.iter() {
             store_staging_microblock(
@@ -6221,8 +6194,8 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
 
@@ -6233,8 +6206,8 @@ pub mod test {
             &block.block_hash(),
             &microblocks.last().as_ref().unwrap().block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -6247,7 +6220,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let microblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -6262,22 +6235,22 @@ pub mod test {
             &chainstate.db(),
             &ConsensusHash([2u8; 20]),
             &block.block_hash(),
-            &microblocks[0].block_hash()
+            &microblocks[0].block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         assert!(StacksChainState::load_descendant_staging_microblock_stream(
             &chainstate.db(),
             &StacksBlockHeader::make_index_block_hash(
                 &ConsensusHash([2u8; 20]),
-                &block.block_hash()
+                &block.block_hash(),
             ),
             0,
-            u16::max_value()
+            u16::max_value(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         store_staging_block(
             &mut chainstate,
@@ -6317,22 +6290,22 @@ pub mod test {
             &chainstate.db(),
             &ConsensusHash([2u8; 20]),
             &block.block_hash(),
-            &microblocks[0].block_hash()
+            &microblocks[0].block_hash(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
 
         assert_eq!(
             StacksChainState::load_staging_microblock(
                 &chainstate.db(),
                 &ConsensusHash([2u8; 20]),
                 &block.block_hash(),
-                &microblocks[0].block_hash()
+                &microblocks[0].block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .try_into_microblock()
-            .unwrap(),
+                .unwrap()
+                .unwrap()
+                .try_into_microblock()
+                .unwrap(),
             microblocks[0]
         );
         assert_eq!(
@@ -6340,13 +6313,13 @@ pub mod test {
                 &chainstate.db(),
                 &StacksBlockHeader::make_index_block_hash(
                     &ConsensusHash([2u8; 20]),
-                    &block.block_hash()
+                    &block.block_hash(),
                 ),
                 0,
-                u16::max_value()
+                u16::max_value(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
 
@@ -6361,8 +6334,8 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
 
@@ -6373,8 +6346,8 @@ pub mod test {
             &block.block_hash(),
             &microblocks.last().as_ref().unwrap().block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         set_block_processed(
             &mut chainstate,
@@ -6406,8 +6379,8 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
 
@@ -6417,7 +6390,7 @@ pub mod test {
                 .get_microblock_status(
                     &ConsensusHash([2u8; 20]),
                     &block.block_hash(),
-                    &mb.block_hash()
+                    &mb.block_hash(),
                 )
                 .unwrap()
                 .is_some());
@@ -6426,7 +6399,7 @@ pub mod test {
                     .get_microblock_status(
                         &ConsensusHash([2u8; 20]),
                         &block.block_hash(),
-                        &mb.block_hash()
+                        &mb.block_hash(),
                     )
                     .unwrap()
                     .unwrap(),
@@ -6439,25 +6412,25 @@ pub mod test {
             &chainstate.db(),
             &StacksBlockHeader::make_index_block_hash(
                 &ConsensusHash([2u8; 20]),
-                &block.block_hash()
+                &block.block_hash(),
             ),
             0,
-            u16::max_value()
+            u16::max_value(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
         assert_eq!(
             StacksChainState::load_descendant_staging_microblock_stream(
                 &chainstate.db(),
                 &StacksBlockHeader::make_index_block_hash(
                     &ConsensusHash([2u8; 20]),
-                    &block.block_hash()
+                    &block.block_hash(),
                 ),
                 0,
-                u16::max_value()
+                u16::max_value(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
     }
@@ -6472,7 +6445,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let microblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -6487,21 +6460,21 @@ pub mod test {
             &chainstate.db(),
             &ConsensusHash([2u8; 20]),
             &block.block_hash(),
-            &microblocks[0].block_hash()
+            &microblocks[0].block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         assert!(StacksChainState::load_descendant_staging_microblock_stream(
             &chainstate.db(),
             &StacksBlockHeader::make_index_block_hash(
                 &ConsensusHash([2u8; 20]),
-                &block.block_hash()
+                &block.block_hash(),
             ),
             0,
-            u16::max_value()
+            u16::max_value(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         store_staging_block(
             &mut chainstate,
@@ -6543,21 +6516,21 @@ pub mod test {
             &chainstate.db(),
             &ConsensusHash([2u8; 20]),
             &block.block_hash(),
-            &microblocks[0].block_hash()
+            &microblocks[0].block_hash(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
         assert_eq!(
             StacksChainState::load_staging_microblock(
                 &chainstate.db(),
                 &ConsensusHash([2u8; 20]),
                 &block.block_hash(),
-                &microblocks[0].block_hash()
+                &microblocks[0].block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .try_into_microblock()
-            .unwrap(),
+                .unwrap()
+                .unwrap()
+                .try_into_microblock()
+                .unwrap(),
             microblocks[0]
         );
         assert_eq!(
@@ -6565,13 +6538,13 @@ pub mod test {
                 &chainstate.db(),
                 &StacksBlockHeader::make_index_block_hash(
                     &ConsensusHash([2u8; 20]),
-                    &block.block_hash()
+                    &block.block_hash(),
                 ),
                 0,
-                u16::max_value()
+                u16::max_value(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
         assert_eq!(
@@ -6581,8 +6554,8 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
 
@@ -6593,8 +6566,8 @@ pub mod test {
             &block.block_hash(),
             &microblocks.last().as_ref().unwrap().block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
 
         // confirm the 0th microblock, but not the 1st or later.
         // do not confirm the block.
@@ -6629,8 +6602,8 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
 
@@ -6641,8 +6614,8 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks.first().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             vec![microblocks[0].clone()]
         );
 
@@ -6653,7 +6626,7 @@ pub mod test {
                 &block.block_hash(),
                 &microblocks[1].block_hash(),
             )
-            .unwrap(),
+                .unwrap(),
             None
         );
 
@@ -6663,7 +6636,7 @@ pub mod test {
                 .get_microblock_status(
                     &ConsensusHash([2u8; 20]),
                     &block.block_hash(),
-                    &mb.block_hash()
+                    &mb.block_hash(),
                 )
                 .unwrap()
                 .is_some());
@@ -6674,7 +6647,7 @@ pub mod test {
                         .get_microblock_status(
                             &ConsensusHash([2u8; 20]),
                             &block.block_hash(),
-                            &mb.block_hash()
+                            &mb.block_hash(),
                         )
                         .unwrap()
                         .unwrap(),
@@ -6687,7 +6660,7 @@ pub mod test {
                         .get_microblock_status(
                             &ConsensusHash([2u8; 20]),
                             &block.block_hash(),
-                            &mb.block_hash()
+                            &mb.block_hash(),
                         )
                         .unwrap()
                         .unwrap(),
@@ -6701,25 +6674,25 @@ pub mod test {
             &chainstate.db(),
             &StacksBlockHeader::make_index_block_hash(
                 &ConsensusHash([2u8; 20]),
-                &block.block_hash()
+                &block.block_hash(),
             ),
             0,
-            u16::max_value()
+            u16::max_value(),
         )
-        .unwrap()
-        .is_some());
+            .unwrap()
+            .is_some());
         assert_eq!(
             StacksChainState::load_descendant_staging_microblock_stream(
                 &chainstate.db(),
                 &StacksBlockHeader::make_index_block_hash(
                     &ConsensusHash([2u8; 20]),
-                    &block.block_hash()
+                    &block.block_hash(),
                 ),
                 0,
-                u16::max_value()
+                u16::max_value(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             microblocks
         );
     }
@@ -6729,7 +6702,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
         let block = make_empty_coinbase_block(&privk);
         let microblocks = make_sample_microblock_stream(&privk, &block.block_hash());
         let num_mblocks = microblocks.len();
@@ -6994,7 +6967,7 @@ pub mod test {
                                 &"name-contract".to_string(),
                                 &format!("conflicting smart contract {}", i),
                             )
-                            .unwrap(),
+                                .unwrap(),
                         );
                         let mut tx_signer = StacksTransactionSigner::new(&tx_smart_contract);
                         tx_signer.sign_origin(&privk).unwrap();
@@ -7056,7 +7029,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
         let mut block_2 = make_empty_coinbase_block(&privk);
@@ -7088,25 +7061,25 @@ pub mod test {
             .iter()
             .zip(&consensus_hashes)
             .zip(&parent_consensus_hashes)
-        {
-            assert!(StacksChainState::load_staging_block_data(
-                &chainstate.db(),
-                &chainstate.blocks_path,
-                consensus_hash,
-                &block.block_hash()
-            )
-            .unwrap()
-            .is_none());
-            store_staging_block(
-                &mut chainstate,
-                consensus_hash,
-                block,
-                parent_consensus_hash,
-                1,
-                2,
-            );
-            assert_block_staging_not_processed(&mut chainstate, consensus_hash, block);
-        }
+            {
+                assert!(StacksChainState::load_staging_block_data(
+                    &chainstate.db(),
+                    &chainstate.blocks_path,
+                    consensus_hash,
+                    &block.block_hash(),
+                )
+                    .unwrap()
+                    .is_none());
+                store_staging_block(
+                    &mut chainstate,
+                    consensus_hash,
+                    block,
+                    parent_consensus_hash,
+                    1,
+                    2,
+                );
+                assert_block_staging_not_processed(&mut chainstate, consensus_hash, block);
+            }
 
         // first block is attachable, but all the rest are not
         assert_eq!(
@@ -7114,11 +7087,11 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[0],
-                &block_1.block_hash()
+                &block_1.block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .attachable,
+                .unwrap()
+                .unwrap()
+                .attachable,
             true
         );
 
@@ -7128,11 +7101,11 @@ pub mod test {
                     &chainstate.db(),
                     &chainstate.blocks_path,
                     consensus_hash,
-                    &block.block_hash()
+                    &block.block_hash(),
                 )
-                .unwrap()
-                .unwrap()
-                .attachable,
+                    .unwrap()
+                    .unwrap()
+                    .attachable,
                 false
             );
         }
@@ -7148,11 +7121,11 @@ pub mod test {
                         &chainstate.db(),
                         &chainstate.blocks_path,
                         child_consensus_hash,
-                        &child_block.block_hash()
+                        &child_block.block_hash(),
                     )
-                    .unwrap()
-                    .unwrap()
-                    .attachable,
+                        .unwrap()
+                        .unwrap()
+                        .attachable,
                     false
                 );
             }
@@ -7174,11 +7147,11 @@ pub mod test {
                         &chainstate.db(),
                         &chainstate.blocks_path,
                         child_consensus_hash,
-                        &child_block.block_hash()
+                        &child_block.block_hash(),
                     )
-                    .unwrap()
-                    .unwrap()
-                    .attachable,
+                        .unwrap()
+                        .unwrap()
+                        .attachable,
                     true
                 );
             }
@@ -7195,7 +7168,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
         let mut block_2 = make_empty_coinbase_block(&privk);
@@ -7228,25 +7201,25 @@ pub mod test {
             .zip(&consensus_hashes)
             .zip(&parent_consensus_hashes)
             .rev()
-        {
-            assert!(StacksChainState::load_staging_block_data(
-                &chainstate.db(),
-                &chainstate.blocks_path,
-                consensus_hash,
-                &block.block_hash()
-            )
-            .unwrap()
-            .is_none());
-            store_staging_block(
-                &mut chainstate,
-                consensus_hash,
-                block,
-                parent_consensus_hash,
-                1,
-                2,
-            );
-            assert_block_staging_not_processed(&mut chainstate, consensus_hash, block);
-        }
+            {
+                assert!(StacksChainState::load_staging_block_data(
+                    &chainstate.db(),
+                    &chainstate.blocks_path,
+                    consensus_hash,
+                    &block.block_hash(),
+                )
+                    .unwrap()
+                    .is_none());
+                store_staging_block(
+                    &mut chainstate,
+                    consensus_hash,
+                    block,
+                    parent_consensus_hash,
+                    1,
+                    2,
+                );
+                assert_block_staging_not_processed(&mut chainstate, consensus_hash, block);
+            }
 
         // first block is accepted, but all the rest are not
         assert_eq!(
@@ -7254,11 +7227,11 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[0],
-                &block_1.block_hash()
+                &block_1.block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .attachable,
+                .unwrap()
+                .unwrap()
+                .attachable,
             true
         );
 
@@ -7268,11 +7241,11 @@ pub mod test {
                     &chainstate.db(),
                     &chainstate.blocks_path,
                     consensus_hash,
-                    &block.block_hash()
+                    &block.block_hash(),
                 )
-                .unwrap()
-                .unwrap()
-                .attachable,
+                    .unwrap()
+                    .unwrap()
+                    .attachable,
                 false
             );
         }
@@ -7288,11 +7261,11 @@ pub mod test {
                         &chainstate.db(),
                         &chainstate.blocks_path,
                         child_consensus_hash,
-                        &child_block.block_hash()
+                        &child_block.block_hash(),
                     )
-                    .unwrap()
-                    .unwrap()
-                    .attachable,
+                        .unwrap()
+                        .unwrap()
+                        .attachable,
                     false
                 );
             }
@@ -7314,11 +7287,11 @@ pub mod test {
                         &chainstate.db(),
                         &chainstate.blocks_path,
                         child_consensus_hash,
-                        &child_block.block_hash()
+                        &child_block.block_hash(),
                     )
-                    .unwrap()
-                    .unwrap()
-                    .attachable,
+                        .unwrap()
+                        .unwrap()
+                        .attachable,
                     true
                 );
             }
@@ -7335,7 +7308,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
         let mut block_2 = make_empty_coinbase_block(&privk);
@@ -7376,25 +7349,25 @@ pub mod test {
             .zip(&consensus_hashes[1..])
             .zip(&parent_consensus_hashes[1..])
             .rev()
-        {
-            assert!(StacksChainState::load_staging_block_data(
-                &chainstate.db(),
-                &chainstate.blocks_path,
-                consensus_hash,
-                &block.block_hash()
-            )
-            .unwrap()
-            .is_none());
-            store_staging_block(
-                &mut chainstate,
-                consensus_hash,
-                block,
-                parent_consensus_hash,
-                1,
-                2,
-            );
-            assert_block_staging_not_processed(&mut chainstate, consensus_hash, block);
-        }
+            {
+                assert!(StacksChainState::load_staging_block_data(
+                    &chainstate.db(),
+                    &chainstate.blocks_path,
+                    consensus_hash,
+                    &block.block_hash(),
+                )
+                    .unwrap()
+                    .is_none());
+                store_staging_block(
+                    &mut chainstate,
+                    consensus_hash,
+                    block,
+                    parent_consensus_hash,
+                    1,
+                    2,
+                );
+                assert_block_staging_not_processed(&mut chainstate, consensus_hash, block);
+            }
 
         // block 4 is not attachable
         assert_eq!(
@@ -7402,11 +7375,11 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[3],
-                &block_4.block_hash()
+                &block_4.block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .attachable,
+                .unwrap()
+                .unwrap()
+                .attachable,
             false
         );
 
@@ -7414,30 +7387,30 @@ pub mod test {
         for (block, consensus_hash) in [&block_2, &block_3]
             .iter()
             .zip(&[&consensus_hashes[1], &consensus_hashes[2]])
-        {
-            assert_eq!(
-                StacksChainState::load_staging_block(
-                    &chainstate.db(),
-                    &chainstate.blocks_path,
-                    consensus_hash,
-                    &block.block_hash()
-                )
-                .unwrap()
-                .unwrap()
-                .attachable,
-                true
-            );
-        }
+            {
+                assert_eq!(
+                    StacksChainState::load_staging_block(
+                        &chainstate.db(),
+                        &chainstate.blocks_path,
+                        consensus_hash,
+                        &block.block_hash(),
+                    )
+                        .unwrap()
+                        .unwrap()
+                        .attachable,
+                    true
+                );
+            }
 
         // store block 1
         assert!(StacksChainState::load_staging_block_data(
             &chainstate.db(),
             &chainstate.blocks_path,
             &consensus_hashes[0],
-            &block_1.block_hash()
+            &block_1.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         store_staging_block(
             &mut chainstate,
             &consensus_hashes[0],
@@ -7454,11 +7427,11 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[0],
-                &block_1.block_hash()
+                &block_1.block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .attachable,
+                .unwrap()
+                .unwrap()
+                .attachable,
             true
         );
 
@@ -7466,20 +7439,20 @@ pub mod test {
         for (block, consensus_hash) in [&block_2, &block_3]
             .iter()
             .zip(&[&consensus_hashes[1], &consensus_hashes[2]])
-        {
-            assert_eq!(
-                StacksChainState::load_staging_block(
-                    &chainstate.db(),
-                    &chainstate.blocks_path,
-                    consensus_hash,
-                    &block.block_hash()
-                )
-                .unwrap()
-                .unwrap()
-                .attachable,
-                false
-            );
-        }
+            {
+                assert_eq!(
+                    StacksChainState::load_staging_block(
+                        &chainstate.db(),
+                        &chainstate.blocks_path,
+                        consensus_hash,
+                        &block.block_hash(),
+                    )
+                        .unwrap()
+                        .unwrap()
+                        .attachable,
+                    false
+                );
+            }
 
         // process block 1, and confirm that it makes block 2 and 3 attachable
         assert_block_not_stored(&mut chainstate, &consensus_hashes[0], &block_1);
@@ -7498,11 +7471,11 @@ pub mod test {
                     &chainstate.db(),
                     &chainstate.blocks_path,
                     consensus_hash,
-                    &block.block_hash()
+                    &block.block_hash(),
                 )
-                .unwrap()
-                .unwrap()
-                .attachable,
+                    .unwrap()
+                    .unwrap()
+                    .attachable,
                 true
             );
         }
@@ -7513,11 +7486,11 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[3],
-                &block_4.block_hash()
+                &block_4.block_hash(),
             )
-            .unwrap()
-            .unwrap()
-            .attachable,
+                .unwrap()
+                .unwrap()
+                .attachable,
             false
         );
     }
@@ -7533,7 +7506,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
         let mut block_2 = make_empty_coinbase_block(&privk);
@@ -7589,10 +7562,10 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &consensus_hashes[0],
-            &blocks[0].block_hash()
+            &blocks[0].block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         store_staging_block(
             &mut chainstate,
             &consensus_hashes[0],
@@ -7620,10 +7593,10 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[i],
-                &blocks[i].block_hash()
+                &blocks[i].block_hash(),
             )
-            .unwrap()
-            .is_none());
+                .unwrap()
+                .is_none());
             store_staging_block(
                 &mut chainstate,
                 &consensus_hashes[i],
@@ -7657,8 +7630,8 @@ pub mod test {
                 &blocks[0].block_hash(),
                 &blocks[i].header.parent_microblock,
             )
-            .unwrap()
-            .unwrap();
+                .unwrap()
+                .unwrap();
             assert_eq!(mblocks_confirmed.as_slice(), &mblocks[0..i]);
         }
     }
@@ -7670,7 +7643,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
         let block_2 = make_empty_coinbase_block(&privk);
@@ -7712,24 +7685,24 @@ pub mod test {
         // store all microblocks to staging
         for ((block, consensus_hash), mblocks) in
             blocks.iter().zip(&consensus_hashes).zip(&microblocks)
-        {
-            for mblock in mblocks {
-                store_staging_microblock(
-                    &mut chainstate,
-                    consensus_hash,
-                    &block.block_hash(),
-                    mblock,
-                );
-                assert!(StacksChainState::load_staging_microblock(
-                    &chainstate.db(),
-                    consensus_hash,
-                    &block.block_hash(),
-                    &mblock.block_hash()
-                )
-                .unwrap()
-                .is_some());
+            {
+                for mblock in mblocks {
+                    store_staging_microblock(
+                        &mut chainstate,
+                        consensus_hash,
+                        &block.block_hash(),
+                        mblock,
+                    );
+                    assert!(StacksChainState::load_staging_microblock(
+                        &chainstate.db(),
+                        consensus_hash,
+                        &block.block_hash(),
+                        &mblock.block_hash(),
+                    )
+                        .unwrap()
+                        .is_some());
+                }
             }
-        }
 
         // store blocks to staging
         for i in 0..blocks.len() {
@@ -7737,10 +7710,10 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[i],
-                &blocks[i].block_hash()
+                &blocks[i].block_hash(),
             )
-            .unwrap()
-            .is_none());
+                .unwrap()
+                .is_none());
             store_staging_block(
                 &mut chainstate,
                 &consensus_hashes[i],
@@ -7771,16 +7744,16 @@ pub mod test {
                     &chainstate.db(),
                     &consensus_hashes[i],
                     &blocks[i].block_hash(),
-                    &mblock.block_hash()
+                    &mblock.block_hash(),
                 )
-                .unwrap()
-                .is_none());
+                    .unwrap()
+                    .is_none());
                 assert!(StacksChainState::load_staging_microblock_bytes(
                     &chainstate.db(),
-                    &mblock.block_hash()
+                    &mblock.block_hash(),
                 )
-                .unwrap()
-                .is_none());
+                    .unwrap()
+                    .is_none());
             }
 
             if i + 1 < blocks.len() {
@@ -7789,19 +7762,19 @@ pub mod test {
                     &chainstate.db(),
                     &chainstate.blocks_path,
                     &consensus_hashes[i + 1],
-                    &blocks[i + 1].block_hash()
+                    &blocks[i + 1].block_hash(),
                 )
-                .unwrap()
-                .is_none());
+                    .unwrap()
+                    .is_none());
                 assert!(
                     StacksChainState::load_block_bytes(
                         &chainstate.blocks_path,
                         &consensus_hashes[i + 1],
-                        &blocks[i + 1].block_hash()
+                        &blocks[i + 1].block_hash(),
                     )
-                    .unwrap()
-                    .unwrap()
-                    .len()
+                        .unwrap()
+                        .unwrap()
+                        .len()
                         > 0
                 );
 
@@ -7812,8 +7785,8 @@ pub mod test {
                         &blocks[i + 1].block_hash(),
                         &mblock.block_hash(),
                     )
-                    .unwrap()
-                    .unwrap();
+                        .unwrap()
+                        .unwrap();
                     assert!(!staging_mblock.processed);
                     assert!(!staging_mblock.orphaned);
                     assert!(staging_mblock.block_data.len() > 0);
@@ -7840,7 +7813,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let mut mblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -7861,10 +7834,10 @@ pub mod test {
                 &chainstate.db(),
                 &consensus_hash,
                 &block.block_hash(),
-                &mblock.block_hash()
+                &mblock.block_hash(),
             )
-            .unwrap()
-            .is_some());
+                .unwrap()
+                .is_some());
         }
 
         // store block to staging
@@ -7872,10 +7845,10 @@ pub mod test {
             &chainstate.db(),
             &chainstate.blocks_path,
             &consensus_hash,
-            &block.block_hash()
+            &block.block_hash(),
         )
-        .unwrap()
-        .is_none());
+            .unwrap()
+            .is_none());
         store_staging_block(
             &mut chainstate,
             &consensus_hash,
@@ -7901,14 +7874,14 @@ pub mod test {
                         &chainstate.db(),
                         &StacksBlockHeader::make_index_block_hash(
                             &consensus_hash,
-                            &block.block_hash()
+                            &block.block_hash(),
                         ),
                         0,
-                        u16::max_value()
+                        u16::max_value(),
                     )
-                    .unwrap()
-                    .unwrap()
-                    .as_slice(),
+                        .unwrap()
+                        .unwrap()
+                        .as_slice(),
                     &mblocks[0..len - i - 1]
                 );
             } else {
@@ -7917,10 +7890,10 @@ pub mod test {
                     &chainstate.db(),
                     &StacksBlockHeader::make_index_block_hash(&consensus_hash, &block.block_hash()),
                     0,
-                    u16::max_value()
+                    u16::max_value(),
                 )
-                .unwrap()
-                .is_none());
+                    .unwrap()
+                    .is_none());
             }
         }
     }
@@ -7932,7 +7905,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let mut mblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -7965,9 +7938,9 @@ pub mod test {
         );
         assert!(!StacksChainState::has_block_indexed(
             &chainstate.blocks_path,
-            &child_index_block_header
+            &child_index_block_header,
         )
-        .unwrap());
+            .unwrap());
         assert!(!chainstate
             .has_microblocks_indexed(&child_index_block_header)
             .unwrap());
@@ -7986,8 +7959,8 @@ pub mod test {
                 &index_block_header,
                 &mblock.header.block_hash(),
             )
-            .unwrap()
-            .is_none());
+                .unwrap()
+                .is_none());
 
             store_staging_microblock(
                 &mut chainstate,
@@ -7999,10 +7972,10 @@ pub mod test {
                 &chainstate.db(),
                 &consensus_hash,
                 &block.block_hash(),
-                &mblock.block_hash()
+                &mblock.block_hash(),
             )
-            .unwrap()
-            .is_some());
+                .unwrap()
+                .is_some());
 
             assert!(chainstate
                 .has_microblocks_indexed(&index_block_header)
@@ -8012,14 +7985,14 @@ pub mod test {
                 &index_block_header,
                 &mblock.header.block_hash(),
             )
-            .unwrap()
-            .is_some());
+                .unwrap()
+                .is_some());
 
             assert!(!StacksChainState::has_block_indexed(
                 &chainstate.blocks_path,
-                &index_block_header
+                &index_block_header,
             )
-            .unwrap());
+                .unwrap());
 
             let mblock_info =
                 StacksChainState::stream_microblock_get_info(&chainstate.db(), &index_block_header)
@@ -8060,9 +8033,9 @@ pub mod test {
         );
         assert!(StacksChainState::has_block_indexed(
             &chainstate.blocks_path,
-            &child_index_block_header
+            &child_index_block_header,
         )
-        .unwrap());
+            .unwrap());
 
         // accept it
         set_block_processed(&mut chainstate, &consensus_hash, &block.block_hash(), true);
@@ -8078,9 +8051,9 @@ pub mod test {
         );
         assert!(StacksChainState::has_block_indexed(
             &chainstate.blocks_path,
-            &child_index_block_header
+            &child_index_block_header,
         )
-        .unwrap());
+            .unwrap());
 
         for i in 0..mblocks.len() {
             assert!(StacksChainState::stream_microblock_get_rowid(
@@ -8088,8 +8061,8 @@ pub mod test {
                 &index_block_header,
                 &mblocks[i].block_hash(),
             )
-            .unwrap()
-            .is_some());
+                .unwrap()
+                .is_some());
 
             // set different parts of this stream as confirmed
             set_microblocks_processed(
@@ -8204,7 +8177,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_16k_block(&privk);
 
@@ -8285,7 +8258,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let mut mblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -8302,9 +8275,9 @@ pub mod test {
             &chainstate.db(),
             &mut vec![],
             &mut stream,
-            123
+            123,
         )
-        .is_err());
+            .is_err());
         assert!(stream.rowid.is_none());
 
         // store microblocks to staging and stream them back
@@ -8325,7 +8298,7 @@ pub mod test {
                     index_block_header.clone(),
                     j as u16,
                 )
-                .unwrap();
+                    .unwrap();
                 loop {
                     let mut next_bytes =
                         stream_one_staging_microblock_to_vec(&chainstate.db(), &mut stream, 4096)
@@ -8363,7 +8336,7 @@ pub mod test {
                     index_block_header.clone(),
                     k as u16,
                 )
-                .unwrap();
+                    .unwrap();
                 loop {
                     let mut next_bytes =
                         stream_unconfirmed_microblocks_to_vec(&mut chainstate, &mut stream, 4096)
@@ -8400,7 +8373,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block = make_empty_coinbase_block(&privk);
         let mut mblocks = make_sample_microblock_stream(&privk, &block.block_hash());
@@ -8474,7 +8447,7 @@ pub mod test {
                 &chainstate,
                 microblock_index_header.clone(),
             )
-            .unwrap();
+                .unwrap();
 
             let mut confirmed_mblock_bytes = vec![];
             loop {
@@ -8570,17 +8543,17 @@ pub mod test {
             .zip(&consensus_hashes)
             .zip(&microblocks)
             .enumerate()
-        {
-            test_debug!("Store microblock stream {} to staging", i);
-            for mblock in mblocks.iter() {
-                store_staging_microblock(
-                    &mut chainstate,
-                    consensus_hash,
-                    &block.block_hash(),
-                    mblock,
-                );
+            {
+                test_debug!("Store microblock stream {} to staging", i);
+                for mblock in mblocks.iter() {
+                    store_staging_microblock(
+                        &mut chainstate,
+                        consensus_hash,
+                        &block.block_hash(),
+                        mblock,
+                    );
+                }
             }
-        }
 
         // no anchored blocks are stored, so our block inventory should _still_ be empty
         let block_inv_all = chainstate.get_blocks_inventory(&header_hashes_all).unwrap();
@@ -8598,10 +8571,10 @@ pub mod test {
                 &chainstate.db(),
                 &chainstate.blocks_path,
                 &consensus_hashes[i],
-                &blocks[i].block_hash()
+                &blocks[i].block_hash(),
             )
-            .unwrap()
-            .is_none());
+                .unwrap()
+                .is_none());
 
             store_staging_block(
                 &mut chainstate,
@@ -8779,15 +8752,15 @@ pub mod test {
                                     &tip.sortition_id,
                                     &block.block_hash(),
                                 )
-                                .unwrap()
-                                .unwrap(); // succeeds because we don't fork
+                                    .unwrap()
+                                    .unwrap(); // succeeds because we don't fork
                             StacksChainState::get_anchored_block_header_info(
                                 chainstate.db(),
                                 &snapshot.consensus_hash,
                                 &snapshot.winning_stacks_block_hash,
                             )
-                            .unwrap()
-                            .unwrap()
+                                .unwrap()
+                                .unwrap()
                         }
                     };
 
@@ -8805,7 +8778,7 @@ pub mod test {
                         &coinbase_tx,
                         ExecutionCost::max_value(),
                     )
-                    .unwrap();
+                        .unwrap();
                     (anchored_block.0, vec![])
                 },
             );
@@ -8831,7 +8804,7 @@ pub mod test {
                     &consensus_hash,
                     &stacks_block.block_hash(),
                 )
-                .unwrap();
+                    .unwrap();
                 let (parent_header, parent_ch) = parent_header_opt.unwrap();
 
                 assert_eq!(last_parent_opt.as_ref().unwrap().header, parent_header);
@@ -8850,7 +8823,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
 
@@ -8967,8 +8940,8 @@ pub mod test {
                 &block_1.block_hash(),
                 &mblocks_1.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             mblocks_1
         );
 
@@ -8979,8 +8952,8 @@ pub mod test {
                 &block_1.block_hash(),
                 &mblocks_2.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             mblocks_2
         );
 
@@ -8991,13 +8964,13 @@ pub mod test {
                 &chainstate.db(),
                 &StacksBlockHeader::make_index_block_hash(
                     &consensus_hashes[0],
-                    &block_1.block_hash()
+                    &block_1.block_hash(),
                 ),
                 0,
-                u16::MAX
+                u16::MAX,
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             vec![]
         );
     }
@@ -9014,7 +8987,7 @@ pub mod test {
         let privk = StacksPrivateKey::from_hex(
             "eb05c83546fdd2c79f10f5ad5434a90dd28f7e3acb7c092157aa1bc3656b012c01",
         )
-        .unwrap();
+            .unwrap();
 
         let block_1 = make_empty_coinbase_block(&privk);
         let mut blocks = vec![];
@@ -9119,8 +9092,8 @@ pub mod test {
                 &block_1.block_hash(),
                 &mblocks.last().as_ref().unwrap().block_hash(),
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             mblocks
         );
 
@@ -9136,10 +9109,10 @@ pub mod test {
                     &chainstate.db(),
                     &consensus_hashes[0],
                     &block_1.block_hash(),
-                    &mblock_branch.last().as_ref().unwrap().block_hash()
+                    &mblock_branch.last().as_ref().unwrap().block_hash(),
                 )
-                .unwrap()
-                .unwrap(),
+                    .unwrap()
+                    .unwrap(),
                 expected_mblocks
             );
         }
@@ -9151,13 +9124,13 @@ pub mod test {
                 &chainstate.db(),
                 &StacksBlockHeader::make_index_block_hash(
                     &consensus_hashes[0],
-                    &block_1.block_hash()
+                    &block_1.block_hash(),
                 ),
                 0,
-                u16::MAX
+                u16::MAX,
             )
-            .unwrap()
-            .unwrap(),
+                .unwrap()
+                .unwrap(),
             mblocks[0..2].to_vec()
         );
     }

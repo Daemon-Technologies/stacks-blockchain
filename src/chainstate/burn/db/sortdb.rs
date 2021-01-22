@@ -2864,8 +2864,8 @@ impl SortitionDB {
         conn: &Connection,
         sortition_id: &SortitionId,
     ) -> Result<Option<BlockSnapshot>, db_error> {
-        println!("开始查询snapshots中的sortition_id: {:?}", sortition_id);
         let qry = "SELECT * FROM snapshots WHERE sortition_id = ?1";
+        println!("调用get_block_snapshot进行SELECT * FROM snapshots WHERE sortition_id = ?1查询, {:?}", sortition_id);
         let args = [&sortition_id];
         query_row_panic(conn, qry, &args, || {
             format!(
@@ -2974,6 +2974,7 @@ impl SortitionDB {
         let qry = "SELECT vtxindex FROM block_commits WHERE sortition_id = ?1 
                     AND txid = (
                       SELECT winning_block_txid FROM snapshots WHERE sortition_id = ?2 LIMIT 1) LIMIT 1";
+        println!("调用get_block_winning_vtxindex进行{:?}查询， sortition_id:{:?}", qry, sortition_id);
         let args: &[&dyn ToSql] = &[sortition, sortition];
         conn.query_row(qry, args, |row| row.get(0))
             .optional()
