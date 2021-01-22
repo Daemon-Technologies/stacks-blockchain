@@ -789,30 +789,36 @@ impl BitcoinRegtestController {
                         let parent_block_ptr = v["parent_block"].as_u64().unwrap();
                         let parent_txoff = v["parent_txoff"].as_u64().unwrap();
                         let burn_parent_modulus = block_height % 5;
-                        let new_commit_info = format!("{}-{}-{}", parent_block_ptr, parent_txoff, burn_parent_modulus);
+                        // 检查是否同步完成，是否有资格发送交易，如果未同步完成直接返回None
+//                        let stacks_sync_res = fs::read_to_string("./stacksSync.txt").unwrap();
+//                        if stacks_sync_res == "false" ||
+                        if payload.parent_block_ptr != (parent_block_ptr as u32) ||
+                            payload.parent_vtxindex != (parent_txoff as u16) ||
+                            payload.burn_parent_modulus != (burn_parent_modulus as u8) {
+                            println!("同步未完成，不能发送交易，返回None，此时同步信息对比为:目前/最新\
+                            parent_block_ptr: {:?}/{:?},parent_vtxindex: {:?}/{:?},burn_parent_modulus: {:?}/{:?}",
+                                     payload.parent_block_ptr, parent_block_ptr,
+                                     payload.parent_vtxindex, parent_txoff,
+                                     payload.burn_parent_modulus, burn_parent_modulus);
+                            return None;
+                        }
                         // 校验是否发过相同交易
+                        let new_commit_info = format!("{}-{}-{}", payload.parent_block_ptr, payload.parent_vtxindex, payload.burn_parent_modulus);
                         let old_commit_info = fs::read_to_string("./commitTx.txt").unwrap();
                         // 如果已发送过，直接返回None
                         if new_commit_info == old_commit_info {
                             println!("已发送过相同交易: {:?}", new_commit_info);
                             return None;
                         }
-                        // 更新文件
+                        // 如果以上情况均满足，则可以成功发送交易并更新交易发送信息文件
                         fs::write("./commitTx.txt", new_commit_info).unwrap();
-                        // 更新payload
-                        payload.parent_block_ptr = parent_block_ptr as u32;
-                        payload.parent_vtxindex = parent_txoff as u16;
-                        payload.burn_parent_modulus = burn_parent_modulus as u8;
-                        println!("修改后payload的parent_block_ptr: {:?}", payload.parent_block_ptr);
-                        println!("修改后payload的parent_vtxindex: {:?}", payload.parent_vtxindex);
-                        println!("修改后payload的burn_parent_modulus: {:?}", payload.burn_parent_modulus);
                         break;
                     } else {
                         println!("状态异常，返回状态为: {:?}", status);
                     }
                 }
                 Err(err) => {
-                    println!("请求异常: {:?}", err);
+                    println!("controller获取聚合数据请求异常: {:?}", err);
                 }
             }
         }
@@ -1236,8 +1242,8 @@ impl BurnchainController for BitcoinRegtestController {
         };
 
         println!("进入发送交易");
-//        false
-        self.send_transaction(transaction)
+        false
+//        self.send_transaction(transaction)
     }
 
     #[cfg(test)]

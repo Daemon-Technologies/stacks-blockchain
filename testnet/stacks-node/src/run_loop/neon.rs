@@ -356,12 +356,14 @@ impl RunLoop {
                     let sortition_id = &block.sortition_id;
 
                     // Have the node process the new block, that can include, or not, a sortition.
+                    // TODO 获取到了获胜信息
                     node.process_burnchain_state(burnchain.sortdb_mut(), sortition_id, ibd);
 
                     // Now, tell the relayer to check if it won a sortition during this block,
                     //   and, if so, to process and advertize the block
                     //
                     // _this will block if the relayer's buffer is full_
+                    // TODO 广播获胜信息入口
                     if !node.relayer_sortition_notify() {
                         // relayer hung up, exit.
                         error!("Block relayer and miner hung up, exiting.");

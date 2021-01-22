@@ -760,11 +760,14 @@ fn spawn_miner_relayer(
                     // synchronize unconfirmed tx index to p2p thread
                     send_unconfirmed_txs(&chainstate, unconfirmed_txs.clone());
                 }
+                // TODO 广播获胜信息2
                 RelayerDirective::ProcessTenure(consensus_hash, burn_hash, block_header_hash) => {
                     debug!(
                         "Relayer: Process tenure {}/{} in {}",
                         &consensus_hash, &block_header_hash, &burn_hash
                     );
+                    // TODO 返回被删除的值
+                    // TODO 获胜却不广播的出错方法
                     if let Some(last_mined_blocks_at_burn_hash) =
                     last_mined_blocks.remove(&burn_hash)
                     {
@@ -1224,6 +1227,7 @@ impl InitializedNeonNode {
             return true;
         }
 
+        // TODO 广播获胜区块信息1
         if let Some(ref snapshot) = &self.last_burn_block {
             if snapshot.sortition {
                 return self
@@ -1586,6 +1590,7 @@ impl InitializedNeonNode {
             }
         }
 
+        // TODO 组装stacks块
         let (anchored_block, _, _) = match StacksBlockBuilder::build_anchored_block(
             chain_state,
             &burn_db.index_conn(),
@@ -1604,6 +1609,37 @@ impl InitializedNeonNode {
             }
         };
         let block_height = anchored_block.header.total_work.work;
+        println!("stacks同步信息: block_height: {:?}, parent_block_hash: {:?}",
+                 block_height, stacks_parent_header.anchored_header.block_hash());
+        // TODO 获取聚合数据查看是否已经同步到最新高度
+//        loop {
+//            let response = ureq::get("http://localhost:8889/snapshotIntegrate").call();
+//            match response {
+//                Ok(mut resp) => {
+//                    let text = resp.into_string().unwrap();
+//                    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+//                    let status = v["status"].as_i64().unwrap();
+//                    if status == 200 {
+//                        let next_stacks_height = v["next_stacks_anchor_height"].as_u64().unwrap();
+//                        // 如果高度同步完成，则重置为true
+//                        if block_height == next_stacks_height {
+//                            println!("stacks高度同步已完成，当前高度为: {:?}", block_height);
+//                            fs::write("./stacksSync.txt", "true").unwrap();
+//                        } else { // 如果高度同步未完成，重置信息为false，不让它发送交易
+//                            println!("stacks高度同步未完成，当前高度为: {:?}", block_height);
+//                            fs::write("./stacksSync.txt", "false").unwrap();
+//                        }
+//                        // 只要成功获取到了聚合信息就break
+//                        break;
+//                    } else {
+//                        println!("状态异常，返回状态为: {:?}", status);
+//                    }
+//                }
+//                Err(err) => {
+//                    println!("neon_node获取聚合数据请求异常: {:?}", err);
+//                }
+//            }
+//        }
         info!(
             "Succeeded assembling {} block #{}: {}, with {} txs, attempt {}",
             if parent_block_total_burn == 0 {
@@ -1706,6 +1742,7 @@ impl InitializedNeonNode {
 
         let ic = sortdb.index_conn();
 
+        // TODO 获取snapshot
         let block_snapshot = SortitionDB::get_block_snapshot(&ic, sort_id)
             .expect("Failed to obtain block snapshot for processed burn block.")
             .expect("Failed to obtain block snapshot for processed burn block.");
@@ -1725,6 +1762,7 @@ impl InitializedNeonNode {
 //        let v: serde_json::Value = serde_json::from_reader(f).unwrap();
 //        println!("is_miner: {:?}", v["is_miner"].as_bool().unwrap());
 
+        // TODO 获胜信息1
         for op in block_commits.into_iter() {
             if op.txid == block_snapshot.winning_block_txid {
                 info!(
@@ -1788,6 +1826,7 @@ impl InitializedNeonNode {
         }
 
         // no-op on UserBurnSupport ops are not supported / produced at this point.
+        // TODO 此处开始给last_burn_block赋值用于后续广播获胜交易
         self.last_burn_block = Some(block_snapshot);
 
         last_sortitioned_block.map(|x| x.0)
