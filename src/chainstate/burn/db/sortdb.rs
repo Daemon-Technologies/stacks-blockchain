@@ -14,80 +14,64 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use rusqlite::types::ToSql;
+use rand;
+use rand::RngCore;
+use rusqlite::{Connection, NO_PARAMS, OpenFlags, OptionalExtension};
 use rusqlite::Row;
 use rusqlite::Transaction;
 use rusqlite::TransactionBehavior;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, NO_PARAMS};
+use rusqlite::types::ToSql;
+use sha2::{Digest, Sha512Trunc256};
 
-use rand;
-use rand::RngCore;
-
-use std::convert::{From, TryFrom, TryInto};
-use std::io::{ErrorKind, Write};
-use std::ops::Deref;
-use std::ops::DerefMut;
-use std::{cmp, fmt, fs, str::FromStr};
-
-use util::db::tx_begin_immediate;
-use util::db::Error as db_error;
-use util::db::{
-    db_mkdirs, query_count, query_row, query_row_columns, query_row_panic, query_rows, u64_to_sql,
-    FromColumn, FromRow, IndexDBConn, IndexDBTx,
-};
-use util::get_epoch_time_secs;
-
-use chainstate::ChainstateDB;
-
-use chainstate::burn::Opcodes;
-use chainstate::burn::{
-    BlockHeaderHash, BlockSnapshot, ConsensusHash, OpsHash, SortitionHash, VRFSeed,
-};
-
-use chainstate::coordinator::{Error as CoordinatorError, PoxAnchorBlockStatus, RewardCycleInfo};
-use core::CHAINSTATE_VERSION;
-
-use chainstate::burn::operations::{
-    leader_block_commit::{MissedBlockCommit, RewardSetInfo, OUTPUTS_PER_COMMIT},
-    BlockstackOperationType, LeaderBlockCommitOp, LeaderKeyRegisterOp, PreStxOp, StackStxOp,
-    TransferStxOp, UserBurnSupportOp,
-};
-
+use address::AddressHashMode;
 use burnchains::{Address, BurnchainHeaderHash, PublicKey, Txid};
-
 use burnchains::{
     Burnchain, BurnchainBlockHeader, BurnchainRecipient, BurnchainStateTransition,
     BurnchainStateTransitionOps, BurnchainTransaction, BurnchainView, Error as BurnchainError,
     PoxConstants,
 };
-
+use chainstate::burn::{
+    BlockHeaderHash, BlockSnapshot, ConsensusHash, OpsHash, SortitionHash, VRFSeed,
+};
+use chainstate::burn::Opcodes;
+use chainstate::burn::operations::{
+    BlockstackOperationType,
+    leader_block_commit::{MissedBlockCommit, OUTPUTS_PER_COMMIT, RewardSetInfo}, LeaderBlockCommitOp, LeaderKeyRegisterOp, PreStxOp, StackStxOp,
+    TransferStxOp, UserBurnSupportOp,
+};
+use chainstate::ChainstateDB;
+use chainstate::coordinator::{Error as CoordinatorError, PoxAnchorBlockStatus, RewardCycleInfo};
+use chainstate::stacks::*;
 use chainstate::stacks::db::{StacksChainState, StacksHeaderInfo};
-use chainstate::stacks::index::marf::MarfConnection;
+use chainstate::stacks::index::{Error as MARFError, MarfTrieId, MARFValue, TrieHash};
 use chainstate::stacks::index::marf::MARF;
+use chainstate::stacks::index::marf::MarfConnection;
 use chainstate::stacks::index::storage::TrieFileStorage;
-use chainstate::stacks::index::{Error as MARFError, MARFValue, MarfTrieId, TrieHash};
 use chainstate::stacks::StacksAddress;
 use chainstate::stacks::StacksPublicKey;
-use chainstate::stacks::*;
-
-use address::AddressHashMode;
-
+use core::CHAINSTATE_VERSION;
+use core::FIRST_STACKS_BLOCK_HASH;
 use net::Error as NetError;
-use sha2::{Digest, Sha512Trunc256};
-use util::hash::{hex_bytes, to_hex, Hash160, Sha512Trunc256Sum};
+use net::neighbors::MAX_NEIGHBOR_BLOCK_DELAY;
+use std::{cmp, fmt, fs, str::FromStr};
+use std::collections::HashMap;
+use std::convert::{From, TryFrom, TryInto};
+use std::io::{ErrorKind, Write};
+use std::ops::Deref;
+use std::ops::DerefMut;
+use util::db::{
+    db_mkdirs, FromColumn, FromRow, IndexDBConn, IndexDBTx, query_count, query_row,
+    query_row_columns, query_row_panic, query_rows, u64_to_sql,
+};
+use util::db::Error as db_error;
+use util::db::tx_begin_immediate;
+use util::db::tx_busy_handler;
+use util::get_epoch_time_secs;
+use util::hash::{Hash160, hex_bytes, Sha512Trunc256Sum, to_hex};
 use util::log;
 use util::secp256k1::MessageSignature;
-use util::vrf::*;
-
-use util::db::tx_busy_handler;
 use util::strings::StacksString;
-
-use net::neighbors::MAX_NEIGHBOR_BLOCK_DELAY;
-
-use std::collections::HashMap;
-
-use core::FIRST_STACKS_BLOCK_HASH;
-
+use util::vrf::*;
 use vm::representations::{ClarityName, ContractName};
 use vm::types::Value;
 
@@ -398,9 +382,12 @@ impl FromRow<TransferStxOp> for TransferStxOp {
 }
 
 struct AcceptedStacksBlockHeader {
-    pub tip_consensus_hash: ConsensusHash, // PoX tip
-    pub consensus_hash: ConsensusHash,     // stacks block consensus hash
-    pub block_hash: BlockHeaderHash,       // stacks block hash
+    pub tip_consensus_hash: ConsensusHash,
+    // PoX tip
+    pub consensus_hash: ConsensusHash,
+    // stacks block consensus hash
+    pub block_hash: BlockHeaderHash,
+    // stacks block hash
     pub height: u64,                       // stacks block height
 }
 
@@ -711,6 +698,7 @@ impl_byte_array_message_codec!(SortitionId, 32);
 pub struct PoxId(Vec<bool>);
 
 struct db_keys;
+
 impl db_keys {
     /// store an entry that maps from a PoX anchor's <stacks-block-header-hash> to <sortition-id of last block in prepare phase that chose it>
     pub fn pox_anchor_to_prepare_end(block_hash: &BlockHeaderHash) -> String {
@@ -1026,8 +1014,8 @@ impl<'a> SortitionHandleTx<'a> {
         consensus_hash_lifetime: u64,
         check: F,
     ) -> Result<bool, db_error>
-    where
-        F: Fn(&ConsensusHash) -> bool,
+        where
+            F: Fn(&ConsensusHash) -> bool,
     {
         let chain_tip = self.context.chain_tip.clone();
         let first_snapshot = SortitionDB::get_first_block_snapshot(self.tx())?;
@@ -1131,7 +1119,7 @@ impl<'a> SortitionHandleTx<'a> {
     ) -> Result<Option<RewardSetInfo>, BurnchainError> {
         if let Some(next_pox_info) = next_pox_info {
             if let PoxAnchorBlockStatus::SelectedAndKnown(ref anchor_block, ref reward_set) =
-                next_pox_info.anchor_status
+            next_pox_info.anchor_status
             {
                 if burnchain.is_in_prepare_phase(block_height) {
                     debug!(
@@ -1622,9 +1610,9 @@ impl<'a> SortitionHandleConn<'a> {
                     None => {
                         // unsolicited -- orphaned
                         warn!(
-                        "Received unsolicited block, could not find parent: {}/{}, parent={}/{}",
-                        consensus_hash, block_hash, block_commit.parent_block_ptr, consensus_hash
-                    );
+                            "Received unsolicited block, could not find parent: {}/{}, parent={}/{}",
+                            consensus_hash, block_hash, block_commit.parent_block_ptr, consensus_hash
+                        );
                         return Ok(None);
                     }
                 };
@@ -1654,16 +1642,16 @@ impl<'a> SortitionHandleConn<'a> {
             burn_block_height
         );
         let get_from = match get_ancestor_sort_id(self, burn_block_height, &self.context.chain_tip)?
-        {
-            Some(sortition_id) => sortition_id,
-            None => {
-                error!(
-                    "No blockheight {} ancestor at sortition identifier {}",
-                    burn_block_height, &self.context.chain_tip
-                );
-                return Err(db_error::NotFoundError);
-            }
-        };
+            {
+                Some(sortition_id) => sortition_id,
+                None => {
+                    error!(
+                        "No blockheight {} ancestor at sortition identifier {}",
+                        burn_block_height, &self.context.chain_tip
+                    );
+                    return Err(db_error::NotFoundError);
+                }
+            };
 
         let ancestor_hash = match self.get_indexed(&get_from, &db_keys::last_sortition())? {
             Some(hex_str) => BurnchainHeaderHash::from_hex(&hex_str).expect(&format!(
@@ -1728,9 +1716,9 @@ impl<'a> SortitionHandleConn<'a> {
             let snapshot =
                 SortitionDB::get_ancestor_snapshot(self, height as u64, &self.context.chain_tip)?
                     .ok_or_else(|| {
-                    warn!("Missing parent"; "sortition_height" => %height);
-                    BurnchainError::MissingParentBlock
-                })?;
+                        warn!("Missing parent"; "sortition_height" => %height);
+                        BurnchainError::MissingParentBlock
+                    })?;
             if snapshot.sortition {
                 result.push((snapshot.winning_block_txid, snapshot.block_height));
             }
@@ -1814,9 +1802,9 @@ impl<'a> SortitionHandleConn<'a> {
                         block_commit.parent_block_ptr as u64,
                         &self.context.chain_tip,
                     )?
-                    .expect(
-                        "CORRUPTED: accepted block commit, but parent pointer not in sortition set",
-                    );
+                        .expect(
+                            "CORRUPTED: accepted block commit, but parent pointer not in sortition set",
+                        );
                     assert!(sn.sortition, "CORRUPTED: accepted block commit, but parent pointer not a sortition winner");
 
                     cursor = (sn.winning_block_txid, sn.block_height);
@@ -2260,7 +2248,7 @@ impl<'a> SortitionDBConn<'a> {
 
         for _i in 0..headers_count {
             if let Some((header_hash_opt, prev_consensus_hash)) =
-                cache.get(&ancestor_consensus_hash)
+            cache.get(&ancestor_consensus_hash)
             {
                 // cache hit
                 ret.push((ancestor_consensus_hash, header_hash_opt.clone()));
@@ -2273,10 +2261,10 @@ impl<'a> SortitionDBConn<'a> {
                 db_handle.conn(),
                 &ancestor_consensus_hash,
             )?
-            .expect(&format!(
-                "Discontiguous index: missing block for consensus hash {}",
-                ancestor_consensus_hash
-            ));
+                .expect(&format!(
+                    "Discontiguous index: missing block for consensus hash {}",
+                    ancestor_consensus_hash
+                ));
 
             assert!(
                 ancestor_snapshot.pox_valid,
@@ -2459,7 +2447,7 @@ impl SortitionDB {
                 Some(BlockHeaderHash::from_hex(&s).expect("BUG: Bad BlockHeaderHash stored in DB"))
             }
         })
-        .flatten()
+            .flatten()
     }
 
     pub fn invalidate_descendants_of(
@@ -2496,15 +2484,15 @@ impl SortitionDB {
         let handle = self.index_handle(sortition_tip);
         let prepare_end_sortid = match handle
             .get_tip_indexed(&db_keys::pox_anchor_to_prepare_end(anchor))?
-        {
-            Some(s) => SortitionId::from_hex(&s).expect("CORRUPTION: DB stored bad sortition ID"),
-            None => return Ok(None),
-        };
+            {
+                Some(s) => SortitionId::from_hex(&s).expect("CORRUPTION: DB stored bad sortition ID"),
+                None => return Ok(None),
+            };
         let snapshot =
             SortitionDB::get_block_snapshot(self.conn(), &prepare_end_sortid)?.expect(&format!(
-            "BUG: Sortition ID for prepare phase end is known, but no BlockSnapshot is stored: {}",
-            &prepare_end_sortid
-        ));
+                "BUG: Sortition ID for prepare phase end is known, but no BlockSnapshot is stored: {}",
+                &prepare_end_sortid
+            ));
         Ok(Some(snapshot))
     }
 
@@ -2793,10 +2781,10 @@ impl SortitionDB {
                 |row| Ok(u64::from_row(row).expect("Expected u64 in database")),
             )
             .optional()?
-        {
-            Some(arrival_index) => Ok(arrival_index),
-            None => Ok(0),
-        }
+            {
+                Some(arrival_index) => Ok(arrival_index),
+                None => Ok(0),
+            }
     }
 
     /// Get the maximum arrival index for any known snapshot.
@@ -2811,10 +2799,10 @@ impl SortitionDB {
                 |row| Ok(u64::from_row(row).expect("Expected u64 in database")),
             )
             .optional()?
-        {
-            Some(arrival_index) => Ok(arrival_index),
-            None => Err(db_error::NotFoundError),
-        }
+            {
+                Some(arrival_index) => Ok(arrival_index),
+                None => Err(db_error::NotFoundError),
+            }
     }
 
     /// Get a snapshot with an arrived block (i.e. a block that was marked as processed)
@@ -2876,6 +2864,7 @@ impl SortitionDB {
         conn: &Connection,
         sortition_id: &SortitionId,
     ) -> Result<Option<BlockSnapshot>, db_error> {
+        println!("开始查询snapshots中的sortition_id: {:?}", sortition_id);
         let qry = "SELECT * FROM snapshots WHERE sortition_id = ?1";
         let args = [&sortition_id];
         query_row_panic(conn, qry, &args, || {
@@ -2884,12 +2873,12 @@ impl SortitionDB {
                 sortition_id
             )
         })
-        .map(|x| {
-            if x.is_none() {
-                test_debug!("No snapshot with burn hash {}", sortition_id);
-            }
-            x
-        })
+            .map(|x| {
+                if x.is_none() {
+                    test_debug!("No snapshot with burn hash {}", sortition_id);
+                }
+                x
+            })
     }
 
     /// Get the first snapshot
@@ -3086,12 +3075,12 @@ impl SortitionDB {
     ) -> Result<Option<LeaderKeyRegisterOp>, db_error> {
         assert!(key_block_height < BLOCK_HEIGHT_MAX);
         let ancestor_snapshot = match SortitionDB::get_ancestor_snapshot(ic, key_block_height, tip)?
-        {
-            Some(sn) => sn,
-            None => {
-                return Ok(None);
-            }
-        };
+            {
+                Some(sn) => sn,
+                None => {
+                    return Ok(None);
+                }
+            };
 
         let qry = "SELECT * FROM leader_keys WHERE sortition_id = ?1 AND block_height = ?2 AND vtxindex = ?3 LIMIT 2";
         let args: &[&dyn ToSql] = &[
@@ -3312,8 +3301,7 @@ impl<'a> SortitionHandleTx<'a> {
         &mut self,
         _new_sortition: &SortitionId,
         _transition: &BurnchainStateTransition,
-    ) {
-    }
+    ) {}
 
     fn store_transition_ops(
         &mut self,
@@ -3778,7 +3766,7 @@ impl<'a> SortitionHandleTx<'a> {
                         } else {
                             let replacement = current_len - 1; // if current_len were 0, we would already have panicked.
                             let replace_with = if let Some((_prior_ix, replace_with)) =
-                                remapped_entries.remove_entry(&replacement)
+                            remapped_entries.remove_entry(&replacement)
                             {
                                 // the entry to swap in was itself swapped, so let's use the new value instead
                                 replace_with
@@ -3861,7 +3849,7 @@ impl<'a> SortitionHandleTx<'a> {
 
             // must be an ancestor of this tip, or must be this tip
             if let Some(sn) =
-                self.get_block_snapshot(&arrival_sn.burn_header_hash, &parent_tip.sortition_id)?
+            self.get_block_snapshot(&arrival_sn.burn_header_hash, &parent_tip.sortition_id)?
             {
                 // this block arrived on an ancestor block
                 assert_eq!(sn, arrival_sn);
@@ -3939,38 +3927,34 @@ impl ChainstateDB for SortitionDB {
 
 #[cfg(test)]
 pub mod tests {
-    use super::*;
-
-    use util::db::Error as db_error;
-    use util::get_epoch_time_secs;
-
+    use address::AddressHashMode;
+    use burnchains::*;
+    use burnchains::bitcoin::address::BitcoinAddress;
+    use burnchains::bitcoin::BitcoinNetworkType;
+    use burnchains::bitcoin::keys::BitcoinPublicKey;
+    use chainstate::burn::{BlockHeaderHash, ConsensusHash, VRFSeed};
     use chainstate::burn::operations::{
-        leader_block_commit::BURN_BLOCK_MINED_AT_MODULUS, BlockstackOperationType,
+        BlockstackOperationType, leader_block_commit::BURN_BLOCK_MINED_AT_MODULUS,
         LeaderBlockCommitOp, LeaderKeyRegisterOp, UserBurnSupportOp,
     };
-
-    use burnchains::bitcoin::address::BitcoinAddress;
-    use burnchains::bitcoin::keys::BitcoinPublicKey;
-    use burnchains::bitcoin::BitcoinNetworkType;
-
-    use burnchains::*;
-    use chainstate::burn::{BlockHeaderHash, ConsensusHash, VRFSeed};
-    use util::hash::{hex_bytes, Hash160};
-    use util::vrf::*;
-
-    use address::AddressHashMode;
     use chainstate::stacks::StacksAddress;
     use chainstate::stacks::StacksPublicKey;
     use core::*;
     use std::sync::mpsc::sync_channel;
     use std::thread;
+    use util::db::Error as db_error;
+    use util::get_epoch_time_secs;
+    use util::hash::{Hash160, hex_bytes};
+    use util::vrf::*;
+
+    use super::*;
 
     #[test]
     fn test_instantiate() {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
         let _db = SortitionDB::connect_test(123, &first_burn_hash).unwrap();
     }
 
@@ -3979,7 +3963,7 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
         let mut db = SortitionDB::connect_test(123, &first_burn_hash).unwrap();
         let tx = db.tx_begin().unwrap();
         tx.commit().unwrap();
@@ -4018,32 +4002,32 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let leader_key = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a9140be3e286a15ea85882761618e366586b5574100d88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("1bfa831b5fc56c858198acb8e77e5863c1e9d8ac26d49ddb914e24d8d4083562")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 1,
             burn_header_hash: BurnchainHeaderHash([0x01; 32]),
@@ -4067,7 +4051,7 @@ pub mod tests {
                 vtxindex,
                 &snapshot.sortition_id,
             )
-            .unwrap();
+                .unwrap();
             assert!(leader_key_opt.is_some());
             assert_eq!(leader_key_opt.unwrap(), leader_key);
         }
@@ -4082,7 +4066,7 @@ pub mod tests {
                 vtxindex,
                 &new_snapshot.sortition_id,
             )
-            .unwrap();
+                .unwrap();
             assert!(leader_key_opt.is_some());
             assert_eq!(leader_key_opt.unwrap(), leader_key);
 
@@ -4092,7 +4076,7 @@ pub mod tests {
                 vtxindex + 1,
                 &new_snapshot.sortition_id,
             )
-            .unwrap();
+                .unwrap();
             assert!(leader_key_none.is_none());
         }
     }
@@ -4104,32 +4088,32 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let leader_key = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a9140be3e286a15ea85882761618e366586b5574100d88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("1bfa831b5fc56c858198acb8e77e5863c1e9d8ac26d49ddb914e24d8d4083562")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 1,
             burn_header_hash: BurnchainHeaderHash([0x01; 32]),
@@ -4141,12 +4125,12 @@ pub mod tests {
                 &hex_bytes("2222222222222222222222222222222222222222222222222222222222222222")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             new_seed: VRFSeed::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333333333333333333333333333")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             parent_block_ptr: 0x43424140,
             parent_vtxindex: 0x5150,
             key_block_ptr: (block_height + 1) as u32,
@@ -4160,7 +4144,7 @@ pub mod tests {
                 public_keys: vec![StacksPublicKey::from_hex(
                     "02d8015134d9db8178ac93acbc43170a2f20febba5087a5b0437058765ad5133d0",
                 )
-                .unwrap()],
+                    .unwrap()],
                 num_sigs: 1,
                 hash_mode: AddressHashMode::SerializeP2PKH,
             },
@@ -4169,7 +4153,7 @@ pub mod tests {
                 &hex_bytes("3c07a0a93360bc85047bbaadd49e30c8af770f73a37e10fec400174d2e5f27cf")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 2,
             burn_parent_modulus: ((block_height + 1) % BURN_BLOCK_MINED_AT_MODULUS) as u8,
@@ -4224,7 +4208,7 @@ pub mod tests {
                 block_commit.vtxindex,
                 &empty_snapshot.sortition_id,
             )
-            .unwrap();
+                .unwrap();
             assert!(parent.is_some());
             assert_eq!(parent.unwrap(), block_commit);
 
@@ -4234,7 +4218,7 @@ pub mod tests {
                 block_commit.vtxindex,
                 &empty_snapshot.sortition_id,
             )
-            .unwrap();
+                .unwrap();
             assert!(parent.is_none());
 
             let parent = SortitionDB::get_block_commit_parent(
@@ -4243,7 +4227,7 @@ pub mod tests {
                 block_commit.vtxindex + 1,
                 &empty_snapshot.sortition_id,
             )
-            .unwrap();
+                .unwrap();
             assert!(parent.is_none());
         }
 
@@ -4258,7 +4242,7 @@ pub mod tests {
                 &hex_bytes("4c07a0a93360bc85047bbaadd49e30c8af770f73a37e10fec400174d2e5f27cf")
                     .unwrap(),
             )
-            .unwrap();
+                .unwrap();
             let commit = handle.get_block_commit_by_txid(&bad_txid).unwrap();
             assert!(commit.is_none());
         }
@@ -4316,32 +4300,32 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let leader_key = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a9140be3e286a15ea85882761618e366586b5574100d88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("1bfa831b5fc56c858198acb8e77e5863c1e9d8ac26d49ddb914e24d8d4083562")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 1,
             burn_header_hash: BurnchainHeaderHash([0x01; 32]),
@@ -4352,16 +4336,16 @@ pub mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             key_block_ptr: (block_height + 1) as u32,
             key_vtxindex: vtxindex as u16,
             burn_fee: 12345,
@@ -4370,7 +4354,7 @@ pub mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 2,
             burn_header_hash: BurnchainHeaderHash([0x03; 32]),
@@ -4410,19 +4394,19 @@ pub mod tests {
         let public_key = VRFPublicKey::from_bytes(
             &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a").unwrap(),
         )
-        .unwrap();
+            .unwrap();
         let block_height = 123;
         let vtxindex = 456;
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let leader_key = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: public_key.clone(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
@@ -4430,14 +4414,14 @@ pub mod tests {
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a9140be3e286a15ea85882761618e366586b5574100d88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("1bfa831b5fc56c858198acb8e77e5863c1e9d8ac26d49ddb914e24d8d4083562")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 2,
             burn_header_hash: BurnchainHeaderHash([0x03; 32]),
@@ -4477,7 +4461,7 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "10000000000000000000000000000000000000000000000000000000000000ff",
         )
-        .unwrap();
+            .unwrap();
         let mut db = SortitionDB::connect_test(0, &first_burn_hash).unwrap();
         {
             let mut last_snapshot = SortitionDB::get_first_block_snapshot(db.conn()).unwrap();
@@ -4535,7 +4519,7 @@ pub mod tests {
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0, 0, 0, 0, 0, i as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     sortition_id,
                     parent_burn_header_hash: BurnchainHeaderHash::from_bytes(&[
                         (if i == 0 { 0x10 } else { 0 }) as u8,
@@ -4571,7 +4555,7 @@ pub mod tests {
                         0,
                         (if i == 0 { 0xff } else { i - 1 }) as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     consensus_hash: ConsensusHash::from_bytes(&[
                         0,
                         0,
@@ -4594,23 +4578,23 @@ pub mod tests {
                         0,
                         (i + 1) as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     ops_hash: OpsHash::from_bytes(&[
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0, 0, 0, 0, 0, i as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     total_burn: i as u64,
                     sortition: true,
                     sortition_hash: SortitionHash::initial(),
                     winning_block_txid: Txid::from_hex(
                         "0000000000000000000000000000000000000000000000000000000000000000",
                     )
-                    .unwrap(),
+                        .unwrap(),
                     winning_stacks_block_hash: BlockHeaderHash::from_hex(
                         "0000000000000000000000000000000000000000000000000000000000000000",
                     )
-                    .unwrap(),
+                        .unwrap(),
                     index_root: TrieHash::from_empty_data(),
                     num_sortitions: i as u64 + 1,
                     stacks_block_accepted: false,
@@ -4642,7 +4626,7 @@ pub mod tests {
         let ch_fresh = ConsensusHash::from_bytes(&[
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
         ])
-        .unwrap();
+            .unwrap();
         let ch_oldest_fresh = ConsensusHash::from_bytes(&[
             0,
             0,
@@ -4665,7 +4649,7 @@ pub mod tests {
             0,
             (255 - consensus_hash_lifetime) as u8,
         ])
-        .unwrap();
+            .unwrap();
         let ch_newest_stale = ConsensusHash::from_bytes(&[
             0,
             0,
@@ -4688,11 +4672,11 @@ pub mod tests {
             0,
             (255 - consensus_hash_lifetime - 1) as u8,
         ])
-        .unwrap();
+            .unwrap();
         let ch_missing = ConsensusHash::from_bytes(&[
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 255,
         ])
-        .unwrap();
+            .unwrap();
 
         let mut ic = SortitionHandleTx::begin(&mut db, &tip.sortition_id).unwrap();
         let fresh_check = ic
@@ -4725,7 +4709,7 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "10000000000000000000000000000000000000000000000000000000000000ff",
         )
-        .unwrap();
+            .unwrap();
         let mut db = SortitionDB::connect_test(0, &first_burn_hash).unwrap();
         {
             let mut last_snapshot = SortitionDB::get_first_block_snapshot(db.conn()).unwrap();
@@ -4783,7 +4767,7 @@ pub mod tests {
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0, 0, 0, 0, 0, i as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     sortition_id,
                     parent_burn_header_hash: BurnchainHeaderHash::from_bytes(&[
                         (if i == 0 { 0x10 } else { 0 }) as u8,
@@ -4819,7 +4803,7 @@ pub mod tests {
                         0,
                         (if i == 0 { 0xff } else { i - 1 }) as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     consensus_hash: ConsensusHash::from_bytes(&[
                         0,
                         0,
@@ -4842,23 +4826,23 @@ pub mod tests {
                         ((i + 1) / 256) as u8,
                         (i + 1) as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     ops_hash: OpsHash::from_bytes(&[
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0, 0, 0, 0, 0, i as u8,
                     ])
-                    .unwrap(),
+                        .unwrap(),
                     total_burn: i as u64,
                     sortition: true,
                     sortition_hash: SortitionHash::initial(),
                     winning_block_txid: Txid::from_hex(
                         "0000000000000000000000000000000000000000000000000000000000000000",
                     )
-                    .unwrap(),
+                        .unwrap(),
                     winning_stacks_block_hash: BlockHeaderHash::from_hex(
                         "0000000000000000000000000000000000000000000000000000000000000000",
                     )
-                    .unwrap(),
+                        .unwrap(),
                     index_root: TrieHash::from_empty_data(),
                     num_sortitions: i as u64 + 1,
                     stacks_block_accepted: false,
@@ -4897,7 +4881,7 @@ pub mod tests {
             let expected_ch = ConsensusHash::from_bytes(&[
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8,
             ])
-            .unwrap();
+                .unwrap();
             let ch = ic.get_consensus_at(i).unwrap().unwrap();
             assert_eq!(ch, expected_ch);
         }
@@ -4910,32 +4894,32 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let leader_key = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a9140be3e286a15ea85882761618e366586b5574100d88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("1bfa831b5fc56c858198acb8e77e5863c1e9d8ac26d49ddb914e24d8d4083562")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 1,
             burn_header_hash: BurnchainHeaderHash([0x01; 32]),
@@ -4947,12 +4931,12 @@ pub mod tests {
                 &hex_bytes("2222222222222222222222222222222222222222222222222222222222222222")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             new_seed: VRFSeed::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333333333333333333333333333")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             parent_block_ptr: 0x43424140,
             parent_vtxindex: 0x4342,
             key_block_ptr: (block_height + 1) as u32,
@@ -4966,7 +4950,7 @@ pub mod tests {
                 public_keys: vec![StacksPublicKey::from_hex(
                     "02d8015134d9db8178ac93acbc43170a2f20febba5087a5b0437058765ad5133d0",
                 )
-                .unwrap()],
+                    .unwrap()],
                 num_sigs: 1,
                 hash_mode: AddressHashMode::SerializeP2PKH,
             },
@@ -4975,7 +4959,7 @@ pub mod tests {
                 &hex_bytes("3c07a0a93360bc85047bbaadd49e30c8af770f73a37e10fec400174d2e5f27cf")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex,
             block_height: block_height + 2,
             burn_parent_modulus: ((block_height + 1) % BURN_BLOCK_MINED_AT_MODULUS) as u8,
@@ -4987,16 +4971,16 @@ pub mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             key_block_ptr: (block_height + 1) as u32,
             key_vtxindex: vtxindex as u16,
             burn_fee: 12345,
@@ -5005,7 +4989,7 @@ pub mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: vtxindex + 1,
             block_height: block_height + 2,
             burn_header_hash: BurnchainHeaderHash([0x03; 32]),
@@ -5047,7 +5031,7 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let mut first_snapshot = BlockSnapshot {
             accumulated_coinbase_ustx: 0,
@@ -5062,18 +5046,18 @@ pub mod tests {
             ops_hash: OpsHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000000",
             )
-            .unwrap(),
+                .unwrap(),
             total_burn: 0,
             sortition: true,
             sortition_hash: SortitionHash::initial(),
             winning_block_txid: Txid::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000000",
             )
-            .unwrap(),
+                .unwrap(),
             winning_stacks_block_hash: BlockHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000000",
             )
-            .unwrap(),
+                .unwrap(),
             index_root: TrieHash([0u8; 32]),
             num_sortitions: 0,
             stacks_block_accepted: false,
@@ -5093,7 +5077,7 @@ pub mod tests {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 2,
             ])
-            .unwrap(),
+                .unwrap(),
             sortition_id: SortitionId([
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 2,
@@ -5102,27 +5086,27 @@ pub mod tests {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 1,
             ])
-            .unwrap(),
+                .unwrap(),
             consensus_hash: ConsensusHash::from_bytes(&[
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
             ])
-            .unwrap(),
+                .unwrap(),
             ops_hash: OpsHash::from_bytes(&[
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 1,
             ])
-            .unwrap(),
+                .unwrap(),
             total_burn: total_burn_sortition,
             sortition: true,
             sortition_hash: SortitionHash::initial(),
             winning_block_txid: Txid::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000001",
             )
-            .unwrap(),
+                .unwrap(),
             winning_stacks_block_hash: BlockHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000001",
             )
-            .unwrap(),
+                .unwrap(),
             index_root: TrieHash([1u8; 32]),
             num_sortitions: 1,
             stacks_block_accepted: false,
@@ -5142,7 +5126,7 @@ pub mod tests {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 1,
             ])
-            .unwrap(),
+                .unwrap(),
             sortition_id: SortitionId([
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 1,
@@ -5151,27 +5135,27 @@ pub mod tests {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0,
             ])
-            .unwrap(),
+                .unwrap(),
             consensus_hash: ConsensusHash::from_bytes(&[
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
             ])
-            .unwrap(),
+                .unwrap(),
             ops_hash: OpsHash::from_bytes(&[
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 2,
             ])
-            .unwrap(),
+                .unwrap(),
             total_burn: total_burn_no_sortition,
             sortition: false,
             sortition_hash: SortitionHash::initial(),
             winning_block_txid: Txid::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000002",
             )
-            .unwrap(),
+                .unwrap(),
             winning_stacks_block_hash: BlockHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000002",
             )
-            .unwrap(),
+                .unwrap(),
             index_root: TrieHash([2u8; 32]),
             num_sortitions: 0,
             stacks_block_accepted: false,
@@ -5209,7 +5193,7 @@ pub mod tests {
                 None,
                 None,
             )
-            .unwrap();
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -5238,7 +5222,7 @@ pub mod tests {
                 None,
                 None,
             )
-            .unwrap();
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -5433,7 +5417,7 @@ pub mod tests {
                 None,
                 None,
             )
-            .unwrap();
+                .unwrap();
             tx.commit().unwrap();
 
             last_snapshot = next_snapshot.clone();
@@ -5730,7 +5714,7 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "10000000000000000000000000000000000000000000000000000000000000ff",
         )
-        .unwrap();
+            .unwrap();
         let mut db = SortitionDB::connect_test(0, &first_burn_hash).unwrap();
         {
             let mut last_snapshot = SortitionDB::get_first_block_snapshot(db.conn()).unwrap();
@@ -5747,7 +5731,7 @@ pub mod tests {
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, i as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         sortition_id: SortitionId([
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, i as u8,
@@ -5786,16 +5770,16 @@ pub mod tests {
                             0,
                             (if i == 0 { 0xff } else { i - 1 }) as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         consensus_hash: ConsensusHash::from_bytes(&[
                             1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         ops_hash: OpsHash::from_bytes(&[
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, i as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         total_burn: total_burn,
                         sortition: false,
                         sortition_hash: SortitionHash([(i as u8); 32]),
@@ -5822,7 +5806,7 @@ pub mod tests {
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, i as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         sortition_id: SortitionId([
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, i as u8,
@@ -5861,16 +5845,16 @@ pub mod tests {
                             0,
                             (if i == 0 { 0xff } else { i - 1 }) as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         consensus_hash: ConsensusHash::from_bytes(&[
                             1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         ops_hash: OpsHash::from_bytes(&[
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, i as u8,
                         ])
-                        .unwrap(),
+                            .unwrap(),
                         total_burn: total_burn,
                         sortition: true,
                         sortition_hash: SortitionHash([(i as u8); 32]),
@@ -5942,7 +5926,7 @@ pub mod tests {
                     ConsensusHash::from_bytes(&[
                         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8
                     ])
-                    .unwrap()
+                        .unwrap()
                 );
 
                 if i > 0 {
@@ -5984,7 +5968,7 @@ pub mod tests {
                     ConsensusHash::from_bytes(&[
                         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8
                     ])
-                    .unwrap()
+                        .unwrap()
                 );
 
                 if i > 0 {
@@ -6026,7 +6010,7 @@ pub mod tests {
                     ConsensusHash::from_bytes(&[
                         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8
                     ])
-                    .unwrap()
+                        .unwrap()
                 );
 
                 assert!(cache.contains_key(consensus_hash));
@@ -6066,7 +6050,7 @@ pub mod tests {
                     ConsensusHash::from_bytes(&[
                         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8
                     ])
-                    .unwrap()
+                        .unwrap()
                 );
 
                 if i > 0 {
@@ -6162,7 +6146,7 @@ pub mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "10000000000000000000000000000000000000000000000000000000000000ff",
         )
-        .unwrap();
+            .unwrap();
         let mut db = SortitionDB::connect_test(0, &first_burn_hash).unwrap();
 
         let mut last_snapshot = SortitionDB::get_first_block_snapshot(db.conn()).unwrap();
@@ -6190,7 +6174,7 @@ pub mod tests {
                     &stacks_block_hash,
                     height,
                 )
-                .unwrap();
+                    .unwrap();
                 tx.commit().unwrap();
             }
 
@@ -6264,7 +6248,7 @@ pub mod tests {
                     &stacks_block_hash,
                     *height,
                 )
-                .unwrap();
+                    .unwrap();
                 tx.commit().unwrap();
             }
 
@@ -6310,7 +6294,7 @@ pub mod tests {
                     &stacks_block_hash,
                     *height,
                 )
-                .unwrap();
+                    .unwrap();
                 tx.commit().unwrap();
             }
 
@@ -6340,7 +6324,7 @@ pub mod tests {
                     &stacks_block_hash,
                     *height,
                 )
-                .unwrap();
+                    .unwrap();
                 tx.commit().unwrap();
             }
 
@@ -6406,7 +6390,7 @@ pub mod tests {
                 &BlockHeaderHash([0x4b; 32]),
                 5,
             )
-            .unwrap();
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -6483,14 +6467,14 @@ pub mod tests {
                 &BlockHeaderHash([0x29; 32]),
                 5,
             )
-            .unwrap();
+                .unwrap();
             tx.set_stacks_block_accepted(
                 &ConsensusHash([0x2b; 20]),
                 &BlockHeaderHash([0x29; 32]),
                 &BlockHeaderHash([0x2a; 32]),
                 6,
             )
-            .unwrap();
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -6550,28 +6534,28 @@ pub mod tests {
                 &BlockHeaderHash([0x45; 32]),
                 5,
             )
-            .unwrap();
+                .unwrap();
             tx.set_stacks_block_accepted(
                 &ConsensusHash([0x47; 20]),
                 &BlockHeaderHash([0x45; 32]),
                 &BlockHeaderHash([0x46; 32]),
                 6,
             )
-            .unwrap();
+                .unwrap();
             tx.set_stacks_block_accepted(
                 &ConsensusHash([0x48; 20]),
                 &BlockHeaderHash([0x46; 32]),
                 &BlockHeaderHash([0x47; 32]),
                 7,
             )
-            .unwrap();
+                .unwrap();
             tx.set_stacks_block_accepted(
                 &ConsensusHash([0x49; 20]),
                 &BlockHeaderHash([0x47; 32]),
                 &BlockHeaderHash([0x48; 32]),
                 8,
             )
-            .unwrap();
+                .unwrap();
             tx.commit().unwrap();
         }
 

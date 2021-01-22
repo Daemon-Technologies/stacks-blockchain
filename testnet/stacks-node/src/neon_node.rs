@@ -1121,6 +1121,7 @@ impl InitializedNeonNode {
         )
             .expect("Failed to initialize mine/relay thread");
 
+        // TODO 运行peer节点，获取chainstate
         spawn_peer(
             config.is_mainnet(),
             p2p_net,
@@ -1150,13 +1151,6 @@ impl InitializedNeonNode {
         };
 
         let atlas_config = AtlasConfig::default(config.is_mainnet());
-
-        let vrf_public_key = VRFPublicKey::from_hex("ef55a0e6de1f522eb731b96be228c81918c1d0f3813226d45633caddf007916b").unwrap();
-        let key = RegisteredKey {
-            block_height: 666736,
-            op_vtxindex: 99,
-            vrf_public_key: vrf_public_key,
-        };
 
         InitializedNeonNode {
             config: config.clone(),
@@ -1259,6 +1253,7 @@ impl InitializedNeonNode {
         bitcoin_controller: &mut BitcoinRegtestController,
         last_mined_blocks: &Vec<&AssembledAnchorBlock>,
     ) -> Option<(AssembledAnchorBlock, Secp256k1PrivateKey)> {
+        // TODO 获取parent_block_ptr信息，通过查询snapshots查询得出
         let (
             mut stacks_parent_header,
             parent_consensus_hash,
@@ -1382,6 +1377,10 @@ impl InitializedNeonNode {
                 0,
             )
         };
+
+        println!("snapshot中获取的信息: parent_block_burn_height: {:?},
+            parent_block_total_burn: {:?},
+            parent_winning_vtxindex: {:?},", parent_block_burn_height, parent_block_total_burn, parent_winning_vtxindex);
 
         // has the tip changed from our previously-mined block for this epoch?
         let attempt = {
@@ -1611,35 +1610,7 @@ impl InitializedNeonNode {
         let block_height = anchored_block.header.total_work.work;
         println!("stacks同步信息: block_height: {:?}, parent_block_hash: {:?}",
                  block_height, stacks_parent_header.anchored_header.block_hash());
-        // TODO 获取聚合数据查看是否已经同步到最新高度
-//        loop {
-//            let response = ureq::get("http://localhost:8889/snapshotIntegrate").call();
-//            match response {
-//                Ok(mut resp) => {
-//                    let text = resp.into_string().unwrap();
-//                    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-//                    let status = v["status"].as_i64().unwrap();
-//                    if status == 200 {
-//                        let next_stacks_height = v["next_stacks_anchor_height"].as_u64().unwrap();
-//                        // 如果高度同步完成，则重置为true
-//                        if block_height == next_stacks_height {
-//                            println!("stacks高度同步已完成，当前高度为: {:?}", block_height);
-//                            fs::write("./stacksSync.txt", "true").unwrap();
-//                        } else { // 如果高度同步未完成，重置信息为false，不让它发送交易
-//                            println!("stacks高度同步未完成，当前高度为: {:?}", block_height);
-//                            fs::write("./stacksSync.txt", "false").unwrap();
-//                        }
-//                        // 只要成功获取到了聚合信息就break
-//                        break;
-//                    } else {
-//                        println!("状态异常，返回状态为: {:?}", status);
-//                    }
-//                }
-//                Err(err) => {
-//                    println!("neon_node获取聚合数据请求异常: {:?}", err);
-//                }
-//            }
-//        }
+
         info!(
             "Succeeded assembling {} block #{}: {}, with {} txs, attempt {}",
             if parent_block_total_burn == 0 {

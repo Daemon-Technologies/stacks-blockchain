@@ -4978,6 +4978,7 @@ impl StacksChainState {
         &self,
         sortdb: &SortitionDB,
     ) -> Result<Option<StagingBlock>, Error> {
+        // TODO 从snapshots查询得出
         let (consensus_hash, block_bhh) =
             SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
         let sql = "SELECT * FROM staging_blocks WHERE processed = 1 AND orphaned = 0 AND consensus_hash = ?1 AND anchored_block_hash = ?2";
