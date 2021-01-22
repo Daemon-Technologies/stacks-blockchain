@@ -2974,7 +2974,7 @@ impl SortitionDB {
         let qry = "SELECT vtxindex FROM block_commits WHERE sortition_id = ?1 
                     AND txid = (
                       SELECT winning_block_txid FROM snapshots WHERE sortition_id = ?2 LIMIT 1) LIMIT 1";
-        println!("调用get_block_winning_vtxindex进行{:?}查询， sortition_id:{:?}", qry, sortition_id);
+        println!("调用get_block_winning_vtxindex进行{:?}查询， sortition_id:{:?}", qry, sortition);
         let args: &[&dyn ToSql] = &[sortition, sortition];
         conn.query_row(qry, args, |row| row.get(0))
             .optional()
