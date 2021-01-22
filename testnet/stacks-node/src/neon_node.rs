@@ -1254,6 +1254,7 @@ impl InitializedNeonNode {
         last_mined_blocks: &Vec<&AssembledAnchorBlock>,
     ) -> Option<(AssembledAnchorBlock, Secp256k1PrivateKey)> {
         // TODO 获取parent_block_ptr信息，通过查询snapshots查询得出
+        println!("开始查询parent信息");
         let (
             mut stacks_parent_header,
             parent_consensus_hash,
@@ -1262,6 +1263,8 @@ impl InitializedNeonNode {
             parent_winning_vtxindex,
             coinbase_nonce,
         ) = if let Some(stacks_tip) = chain_state.get_stacks_chain_tip(burn_db).unwrap() {
+            println!("获取到stacks_tip后进入if条件");
+            println!("获取到stacks_tip.consensys_hash: {:?}",stacks_tip.consensus_hash);
             let stacks_tip_header = match StacksChainState::get_anchored_block_header_info(
                 chain_state.db(),
                 &stacks_tip.consensus_hash,
@@ -1278,6 +1281,7 @@ impl InitializedNeonNode {
 
             // the consensus hash of my Stacks block parent
             let parent_consensus_hash = stacks_tip.consensus_hash.clone();
+            println!("获取到parent_consensus_hash: {:?}",parent_consensus_hash);
 
             // the stacks block I'm mining off of's burn header hash and vtxindex:
             let parent_snapshot = SortitionDB::get_block_snapshot_consensus(
@@ -1288,6 +1292,7 @@ impl InitializedNeonNode {
                 .expect("Failed to look up block's parent snapshot");
 
             let parent_sortition_id = &parent_snapshot.sortition_id;
+            println!("获取到parent_sortition_id: {:?}",parent_sortition_id);
             let parent_winning_vtxindex =
                 match SortitionDB::get_block_winning_vtxindex(burn_db.conn(), parent_sortition_id)
                     .expect("SortitionDB failure.")
@@ -1301,7 +1306,7 @@ impl InitializedNeonNode {
                             return None;
                         }
                     };
-
+            println!("获取到parent_winning_vtxindex: {:?}",parent_winning_vtxindex);
             let parent_block =
                 match SortitionDB::get_block_snapshot(burn_db.conn(), parent_sortition_id)
                     .expect("SortitionDB failure.")
@@ -1315,10 +1320,12 @@ impl InitializedNeonNode {
                             return None;
                         }
                     };
+            println!("获取到parent_block.block_height: {:?}",parent_block.block_height);
 
             // don't mine off of an old burnchain block
             let burn_chain_tip = SortitionDB::get_canonical_burn_chain_tip(burn_db.conn())
                 .expect("FATAL: failed to query sortition DB for canonical burn chain tip");
+            println!("获取到burn_chain_tip: {:?}",burn_chain_tip);
 
             if burn_chain_tip.consensus_hash != burn_block.consensus_hash {
                 debug!("New canonical burn chain tip detected: {} ({}) > {} ({}). Will not try to mine.", burn_chain_tip.consensus_hash, burn_chain_tip.block_height, &burn_block.consensus_hash, &burn_block.block_height);
@@ -1346,6 +1353,7 @@ impl InitializedNeonNode {
                     ));
                 account.nonce
             };
+            println!("获取到stacks_tip后退出if条件");
 
             (
                 stacks_tip_header,

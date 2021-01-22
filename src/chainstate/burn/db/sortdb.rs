@@ -2865,7 +2865,6 @@ impl SortitionDB {
         sortition_id: &SortitionId,
     ) -> Result<Option<BlockSnapshot>, db_error> {
         let qry = "SELECT * FROM snapshots WHERE sortition_id = ?1";
-        println!("调用get_block_snapshot进行SELECT * FROM snapshots WHERE sortition_id = ?1查询, {:?}", sortition_id);
         let args = [&sortition_id];
         query_row_panic(conn, qry, &args, || {
             format!(
