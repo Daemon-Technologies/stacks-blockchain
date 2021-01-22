@@ -344,6 +344,9 @@ impl RunLoop {
             let sortition_tip = &burnchain_tip.block_snapshot.sortition_id;
             let next_height = burnchain_tip.block_snapshot.block_height;
 
+            println!("修改前block height: {:?}", block_height);
+            println!("修改前burnchain height: {:?}", burnchain_height);
+            println!("修改前next height: {:?}", next_height);
             if next_height > block_height {
                 // first, let's process all blocks in (block_height, next_height]
                 for block_to_process in (block_height + 1)..(next_height + 1) {
@@ -378,9 +381,9 @@ impl RunLoop {
                 );
             }
 
-            println!("block height: {:?}", block_height);
-            println!("burnchain height: {:?}", burnchain_height);
-
+            println!("修改后block height: {:?}", block_height);
+            println!("修改后burnchain height: {:?}", burnchain_height);
+            println!("修改后next height: {:?}", next_height);
             if block_height >= burnchain_height && !ibd {
                 // at tip, and not downloading. proceed to mine.
                 debug!(

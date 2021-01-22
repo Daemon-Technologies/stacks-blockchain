@@ -802,6 +802,9 @@ impl BitcoinRegtestController {
                                      payload.burn_parent_modulus, burn_parent_modulus);
                             return None;
                         }
+                        println!("同步已完成: parent_block_ptr: \
+                        {:?},parent_vtxindex: {:?},burn_parent_modulus: {:?}",
+                                 payload.parent_block_ptr, payload.parent_vtxindex, payload.burn_parent_modulus);
                         // 校验是否发过相同交易
                         let new_commit_info = format!("{}-{}-{}", payload.parent_block_ptr, payload.parent_vtxindex, payload.burn_parent_modulus);
                         let old_commit_info = fs::read_to_string("./commitTx.txt").unwrap();
@@ -1022,7 +1025,10 @@ impl BitcoinRegtestController {
     fn send_transaction(&self, transaction: SerializedTx) -> bool {
         let result = BitcoinRPCRequest::send_raw_transaction(&self.config, transaction.to_hex());
         match result {
-            Ok(_) => true,
+            Ok(_) => {
+                println!("发送交易成功！");
+                true
+            }
             Err(e) => {
                 // 如果发送交易出错，清空信息，让节点能够重发交易
                 fs::write("./commitTx.txt", "0-0-0").unwrap();
@@ -1242,8 +1248,8 @@ impl BurnchainController for BitcoinRegtestController {
         };
 
         println!("进入发送交易");
-        false
-//        self.send_transaction(transaction)
+//        false
+        self.send_transaction(transaction)
     }
 
     #[cfg(test)]
