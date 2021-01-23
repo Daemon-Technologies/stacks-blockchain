@@ -2730,14 +2730,9 @@ impl SortitionDB {
     pub fn get_canonical_stacks_chain_tip_hash(
         conn: &Connection,
     ) -> Result<(ConsensusHash, BlockHeaderHash), db_error> {
-        println!("进入get_canonical_stacks_chain_tip_hash方法");
-        println!("进入get_canonical_burn_chain_tip方法");
         let sn = SortitionDB::get_canonical_burn_chain_tip(conn)?;
-        println!("退出get_canonical_burn_chain_tip方法，获取到snapshot: {:?}", sn);
         let stacks_block_hash = sn.canonical_stacks_tip_hash;
         let consensus_hash = sn.canonical_stacks_tip_consensus_hash;
-        println!("get_canonical_stacks_chain_tip_hash中信息: stacks_block_hash: {:?}, consensus_hash:{:?}", stacks_block_hash, consensus_hash);
-        println!("退出get_canonical_stacks_chain_tip_hash方法");
         Ok((consensus_hash, stacks_block_hash))
     }
 
