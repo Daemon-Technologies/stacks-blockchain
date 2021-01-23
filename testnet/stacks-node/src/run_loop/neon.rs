@@ -1,3 +1,5 @@
+use chrono::Utc;
+
 use stacks::burnchains::{Address, Burnchain};
 use stacks::burnchains::bitcoin::address::BitcoinAddress;
 use stacks::burnchains::bitcoin::address::BitcoinAddressType;
@@ -314,12 +316,16 @@ impl RunLoop {
         target_burnchain_block_height = burnchain_height + pox_constants.reward_cycle_length as u64;
 
         loop {
+            println!("start方法开始loop: {:?}", Utc::now());
             // wait for the p2p state-machine to do at least one pass
             debug!("Wait until we reach steady-state before processing more burnchain blocks...");
             // wait until it's okay to process the next sortitions
+            println!("start方法开始获取ibd: {:?}", Utc::now());
             let ibd =
                 pox_watchdog.pox_sync_wait(&burnchain_config, &burnchain_tip, burnchain_height);
+            println!("start方法结束获取ibd: {:?}", Utc::now());
 
+            println!("start方法开始调用burnchain.sync: {:?}", Utc::now());
             let (next_burnchain_tip, next_burnchain_height) =
                 match burnchain.sync(Some(target_burnchain_block_height)) {
                     Ok(x) => x,
@@ -328,7 +334,7 @@ impl RunLoop {
                         return;
                     }
                 };
-
+            println!("start方法结束调用burnchain.sync: {:?}", Utc::now());
             target_burnchain_block_height = cmp::min(
                 next_burnchain_height,
                 target_burnchain_block_height + pox_constants.reward_cycle_length as u64,
@@ -343,12 +349,10 @@ impl RunLoop {
 
             let sortition_tip = &burnchain_tip.block_snapshot.sortition_id;
             let next_height = burnchain_tip.block_snapshot.block_height;
-
-            println!("修改前block height: {:?}", block_height);
-            println!("修改前burnchain height: {:?}", burnchain_height);
-            println!("修改前next height: {:?}", next_height);
+            println!("start方法开始进入next_height>block_height: {:?}", Utc::now());
             if next_height > block_height {
                 // first, let's process all blocks in (block_height, next_height]
+                println!("start方法开始block_to_porcess: {:?}", Utc::now());
                 for block_to_process in (block_height + 1)..(next_height + 1) {
                     let block = {
                         let ic = burnchain.sortdb_ref().index_conn();
@@ -373,6 +377,7 @@ impl RunLoop {
                         return;
                     }
                 }
+                println!("start方法结束block_to_porcess: {:?}", Utc::now());
 
                 block_height = next_height;
                 debug!(
@@ -381,21 +386,23 @@ impl RunLoop {
                 );
             }
 
-            println!("修改后block height: {:?}", block_height);
-            println!("修改后burnchain height: {:?}", burnchain_height);
-            println!("修改后next height: {:?}", next_height);
+            println!("start方法开始block_height >= burnchain_height: {:?}", Utc::now());
             if block_height >= burnchain_height && !ibd {
                 // at tip, and not downloading. proceed to mine.
                 debug!(
                     "Synchronized full burnchain up to height {}. Proceeding to mine blocks",
                     block_height
                 );
+                println!("start方法开始relayer_issue_tenure: {:?}", Utc::now());
                 if !node.relayer_issue_tenure() {
                     // relayer hung up, exit.
                     error!("Block relayer and miner hung up, exiting.");
                     return;
                 }
+                println!("start方法结束relayer_issue_tenure: {:?}", Utc::now());
             }
+            println!("start方法结束block_height >= burnchain_height: {:?}", Utc::now());
+            println!("start方法结束loop: {:?}", Utc::now());
         }
     }
 }

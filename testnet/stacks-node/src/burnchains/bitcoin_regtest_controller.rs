@@ -4,6 +4,8 @@ use async_h1::client;
 use async_std::io::ReadExt;
 use async_std::net::TcpStream;
 use base64::encode;
+use chrono::Utc;
+use chrono::Utc;
 use http_types::{Method, Request, Url};
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -1190,6 +1192,7 @@ impl BurnchainController for BitcoinRegtestController {
         &mut self,
         target_block_height_opt: Option<u64>,
     ) -> Result<(BurnchainTip, u64), BurnchainControllerError> {
+        println!("sync方法开始调用receive_blocks: {:?}", Utc::now());
         let (burnchain_tip, burnchain_height) = if self.config.burnchain.mode == "helium" {
             // Helium: this node is responsible for mining new burnchain blocks
             self.build_next_block(1);
@@ -1198,6 +1201,7 @@ impl BurnchainController for BitcoinRegtestController {
             // Neon: this node is waiting on a block to be produced
             self.receive_blocks(true, target_block_height_opt)?
         };
+        println!("sync方法结束调用receive_blocks: {:?}", Utc::now());
 
         // Evaluate process_exit_at_block_height setting
         if let Some(cap) = self.config.burnchain.process_exit_at_block_height {
@@ -1207,6 +1211,7 @@ impl BurnchainController for BitcoinRegtestController {
                     cap
                 );
                 info!("This process will automatically terminate in 30s, restart your node for participating in the next epoch.");
+                println!("sync方法中开始等待30秒: {:?}", Utc::now());
                 sleep_ms(30000);
                 std::process::exit(0);
             }
@@ -1221,6 +1226,7 @@ impl BurnchainController for BitcoinRegtestController {
         op_signer: &mut BurnchainOpSigner,
         attempt: u64,
     ) -> bool {
+        println!("submit_operation方法开始: {:?}",Utc::now());
         let transaction = match operation {
             BlockstackOperationType::LeaderBlockCommit(payload) => {
                 self.build_leader_block_commit_tx(payload, op_signer, attempt)
@@ -1248,8 +1254,9 @@ impl BurnchainController for BitcoinRegtestController {
         };
 
         println!("进入发送交易");
-//        false
-        self.send_transaction(transaction)
+        println!("submit_operation方法结束: {:?}",Utc::now());
+        false
+//        self.send_transaction(transaction)
     }
 
     #[cfg(test)]
