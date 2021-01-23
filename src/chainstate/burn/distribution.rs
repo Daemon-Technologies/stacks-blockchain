@@ -14,34 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::cmp;
-use std::collections::{BTreeMap, HashMap};
-use std::convert::TryInto;
-
-use chainstate::burn::operations::{
-    leader_block_commit::MissedBlockCommit, BlockstackOperationType, LeaderBlockCommitOp,
-    LeaderKeyRegisterOp, UserBurnSupportOp,
-};
-
+use address::AddressHashMode;
+use burnchains::{BurnchainRecipient, BurnchainSigner, BurnchainTransaction};
 use burnchains::Address;
 use burnchains::Burnchain;
 use burnchains::PublicKey;
 use burnchains::Txid;
-use burnchains::{BurnchainRecipient, BurnchainSigner, BurnchainTransaction};
-
-use address::AddressHashMode;
+use chainstate::burn::operations::{
+    BlockstackOperationType, leader_block_commit::MissedBlockCommit, LeaderBlockCommitOp,
+    LeaderKeyRegisterOp, UserBurnSupportOp,
+};
 use chainstate::stacks::StacksPublicKey;
-
+use core::MINING_COMMITMENT_WINDOW;
+use std::cmp;
+use std::collections::{BTreeMap, HashMap};
+use std::convert::TryInto;
 use util::hash::Hash160;
+use util::log;
 use util::uint::BitArray;
 use util::uint::Uint256;
 use util::uint::Uint512;
-
-use util::log;
-
 use util::vrf::VRFPublicKey;
-
-use core::MINING_COMMITMENT_WINDOW;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BurnSamplePoint {
@@ -174,17 +167,17 @@ impl BurnSamplePoint {
         let mut commits_with_priors: Vec<_> =
             // start with the most recent
             block_commits
-            .remove((window_size - 1) as usize)
-            .into_iter()
-            .map(|op| {
-                let mut linked_commits = vec![None; window_size as usize];
-                linked_commits[0] = Some(LinkedCommitmentScore {
+                .remove((window_size - 1) as usize)
+                .into_iter()
+                .map(|op| {
+                    let mut linked_commits = vec![None; window_size as usize];
+                    linked_commits[0] = Some(LinkedCommitmentScore {
                         rel_block_height: window_size - 1,
                         op: LinkedCommitIdentifier::Valid(op),
                     });
-                linked_commits
-            })
-            .collect();
+                    linked_commits
+                })
+                .collect();
 
         for rel_block_height in (0..(window_size - 1)).rev() {
             let cur_commits = block_commits.remove(rel_block_height as usize);
@@ -218,7 +211,7 @@ impl BurnSamplePoint {
 
                 // find out which block-commit we chained to
                 let referenced_op = if let Some(referenced_commit) =
-                    cur_commits_map.remove(end.op.spent_txid())
+                cur_commits_map.remove(end.op.spent_txid())
                 {
                     // found a chained utxo
                     Some(LinkedCommitIdentifier::Valid(referenced_commit))
@@ -277,7 +270,7 @@ impl BurnSamplePoint {
 
                 let burns = cmp::min(median_burn, most_recent_burn);
                 let candidate = if let LinkedCommitIdentifier::Valid(op) =
-                    linked_commits.remove(0).unwrap().op
+                linked_commits.remove(0).unwrap().op
                 {
                     op
                 } else {
@@ -290,7 +283,11 @@ impl BurnSamplePoint {
                        "most_recent_burn" => %most_recent_burn,
                        "median_burn" => %median_burn,
                        "all_burns" => %format!("{:?}", all_burns));
-
+                println!("Burn sample: txid: {:?}, most_recent_burn: {:?}, median_burn: {:?}, all_burns: {:?}",
+                         candidate.txid.to_string(),
+                         most_recent_burn,
+                         median_burn,
+                         all_burns);
                 BurnSamplePoint {
                     burns,
                     range_start: Uint256::zero(), // To be filled in
@@ -381,41 +378,34 @@ impl BurnSamplePoint {
 
 #[cfg(test)]
 mod tests {
-    use super::BurnSamplePoint;
-
-    use core::MINING_COMMITMENT_WINDOW;
-    use std::marker::PhantomData;
-
+    use address::AddressHashMode;
+    use burnchains::{BurnchainHeaderHash, Txid};
     use burnchains::Address;
+    use burnchains::bitcoin::address::BitcoinAddress;
+    use burnchains::bitcoin::BitcoinNetworkType;
+    use burnchains::bitcoin::keys::BitcoinPublicKey;
     use burnchains::Burnchain;
     use burnchains::BurnchainSigner;
     use burnchains::PublicKey;
-
+    use chainstate::burn::{BlockHeaderHash, ConsensusHash, VRFSeed};
     use chainstate::burn::db::sortdb::SortitionId;
     use chainstate::burn::operations::{
-        leader_block_commit::{MissedBlockCommit, BURN_BLOCK_MINED_AT_MODULUS},
-        BlockstackOperationType, LeaderBlockCommitOp, LeaderKeyRegisterOp, UserBurnSupportOp,
+        BlockstackOperationType,
+        leader_block_commit::{BURN_BLOCK_MINED_AT_MODULUS, MissedBlockCommit}, LeaderBlockCommitOp, LeaderKeyRegisterOp, UserBurnSupportOp,
     };
-
-    use burnchains::bitcoin::address::BitcoinAddress;
-    use burnchains::bitcoin::keys::BitcoinPublicKey;
-    use burnchains::bitcoin::BitcoinNetworkType;
-
-    use burnchains::{BurnchainHeaderHash, Txid};
-    use chainstate::burn::{BlockHeaderHash, ConsensusHash, VRFSeed};
-    use util::hash::hex_bytes;
-    use util::vrf::*;
-
+    use chainstate::stacks::StacksAddress;
+    use chainstate::stacks::StacksPublicKey;
+    use core::MINING_COMMITMENT_WINDOW;
+    use std::marker::PhantomData;
     use util::hash::Hash160;
+    use util::hash::hex_bytes;
+    use util::log;
     use util::uint::BitArray;
     use util::uint::Uint256;
     use util::uint::Uint512;
+    use util::vrf::*;
 
-    use util::log;
-
-    use address::AddressHashMode;
-    use chainstate::stacks::StacksAddress;
-    use chainstate::stacks::StacksPublicKey;
+    use super::BurnSamplePoint;
 
     struct BurnDistFixture {
         consumed_leader_keys: Vec<LeaderKeyRegisterOp>,
@@ -817,102 +807,102 @@ mod tests {
         let first_burn_hash = BurnchainHeaderHash::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
-        .unwrap();
+            .unwrap();
 
         let leader_key_1 = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("2222222222222222222222222222222222222222").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a9140be3e286a15ea85882761618e366586b5574100d88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("1bfa831b5fc56c858198acb8e77e5863c1e9d8ac26d49ddb914e24d8d4083562")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 456,
             block_height: 123,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000001",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let leader_key_2 = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("bb519494643f79f1dea0350e6fb9a1da88dfdb6137117fc2523824a8aa44fe1c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a91432b6c66189da32bd0a9f00ee4927f569957d71aa88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("9410df84e2b440055c33acb075a0687752df63fe8fe84aeec61abe469f0448c7")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 457,
             block_height: 122,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000002",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let leader_key_3 = LeaderKeyRegisterOp {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("de8af7037e522e65d2fe2d63fb1b764bfea829df78b84444338379df13144a02")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             memo: vec![01, 02, 03, 04, 05],
             address: StacksAddress::from_bitcoin_address(
                 &BitcoinAddress::from_scriptpubkey(
                     BitcoinNetworkType::Testnet,
                     &hex_bytes("76a91432b6c66189da32bd0a9f00ee4927f569957d71aa88ac").unwrap(),
                 )
-                .unwrap(),
+                    .unwrap(),
             ),
 
             txid: Txid::from_bytes_be(
                 &hex_bytes("eb54704f71d4a2d1128d60ffccced547054b52250ada6f3e7356165714f44d4c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 10,
             block_height: 121,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000012",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let user_burn_noblock = UserBurnSupportOp {
@@ -920,16 +910,16 @@ mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("4444444444444444444444444444444444444444").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             key_block_ptr: 1,
             key_vtxindex: 772,
             burn_fee: 12345,
@@ -938,13 +928,13 @@ mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 12,
             block_height: 124,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let user_burn_1 = UserBurnSupportOp {
@@ -952,16 +942,16 @@ mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("4444444444444444444444444444444444444444").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("7150f635054b87df566a970b21e07030d6444bf2").unwrap(),
             )
-            .unwrap(), // 22222....2222
+                .unwrap(), // 22222....2222
             key_block_ptr: 123,
             key_vtxindex: 456,
             burn_fee: 10000,
@@ -970,13 +960,13 @@ mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 13,
             block_height: 124,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let user_burn_1_2 = UserBurnSupportOp {
@@ -984,16 +974,16 @@ mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("4444444444444444444444444444444444444444").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("a366b51292bef4edd64063d9145c617fec373bceb0758e98cd72becd84d54c7a")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("7150f635054b87df566a970b21e07030d6444bf2").unwrap(),
             )
-            .unwrap(), // 22222....2222
+                .unwrap(), // 22222....2222
             key_block_ptr: 123,
             key_vtxindex: 456,
             burn_fee: 30000,
@@ -1002,13 +992,13 @@ mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 14,
             block_height: 124,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let user_burn_2 = UserBurnSupportOp {
@@ -1016,16 +1006,16 @@ mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("4444444444444444444444444444444444444444").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("bb519494643f79f1dea0350e6fb9a1da88dfdb6137117fc2523824a8aa44fe1c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("037a1e860899a4fa823c18b66f6264d20236ec58").unwrap(),
             )
-            .unwrap(), // 22222....2223
+                .unwrap(), // 22222....2223
             key_block_ptr: 122,
             key_vtxindex: 457,
             burn_fee: 20000,
@@ -1034,13 +1024,13 @@ mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716d")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 15,
             block_height: 124,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let user_burn_2_2 = UserBurnSupportOp {
@@ -1048,16 +1038,16 @@ mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("4444444444444444444444444444444444444444").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("bb519494643f79f1dea0350e6fb9a1da88dfdb6137117fc2523824a8aa44fe1c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("037a1e860899a4fa823c18b66f6264d20236ec58").unwrap(),
             )
-            .unwrap(), // 22222....2223
+                .unwrap(), // 22222....2223
             key_block_ptr: 122,
             key_vtxindex: 457,
             burn_fee: 40000,
@@ -1066,13 +1056,13 @@ mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716c")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 16,
             block_height: 124,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let user_burn_nokey = UserBurnSupportOp {
@@ -1080,16 +1070,16 @@ mod tests {
             consensus_hash: ConsensusHash::from_bytes(
                 &hex_bytes("4444444444444444444444444444444444444444").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             public_key: VRFPublicKey::from_bytes(
                 &hex_bytes("3f3338db51f2b1f6ac0cf6177179a24ee130c04ef2f9849a64a216969ab60e70")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             block_header_hash_160: Hash160::from_bytes(
                 &hex_bytes("037a1e860899a4fa823c18b66f6264d20236ec58").unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             key_block_ptr: 121,
             key_vtxindex: 772,
             burn_fee: 12345,
@@ -1098,13 +1088,13 @@ mod tests {
                 &hex_bytes("1d5cbdd276495b07f0e0bf0181fa57c175b217bc35531b078d62fc20986c716e")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 17,
             block_height: 124,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let block_commit_1 = LeaderBlockCommitOp {
@@ -1113,12 +1103,12 @@ mod tests {
                 &hex_bytes("2222222222222222222222222222222222222222222222222222222222222222")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             new_seed: VRFSeed::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333333333333333333333333333")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             parent_block_ptr: 111,
             parent_vtxindex: 456,
             key_block_ptr: 123,
@@ -1131,7 +1121,7 @@ mod tests {
                 public_keys: vec![StacksPublicKey::from_hex(
                     "02d8015134d9db8178ac93acbc43170a2f20febba5087a5b0437058765ad5133d0",
                 )
-                .unwrap()],
+                    .unwrap()],
                 num_sigs: 1,
                 hash_mode: AddressHashMode::SerializeP2PKH,
             },
@@ -1142,14 +1132,14 @@ mod tests {
                 &hex_bytes("3c07a0a93360bc85047bbaadd49e30c8af770f73a37e10fec400174d2e5f27cf")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 443,
             block_height: 124,
             burn_parent_modulus: (123 % BURN_BLOCK_MINED_AT_MODULUS) as u8,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let block_commit_2 = LeaderBlockCommitOp {
@@ -1158,12 +1148,12 @@ mod tests {
                 &hex_bytes("2222222222222222222222222222222222222222222222222222222222222223")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             new_seed: VRFSeed::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333333333333333333333333334")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             parent_block_ptr: 112,
             parent_vtxindex: 111,
             key_block_ptr: 122,
@@ -1176,7 +1166,7 @@ mod tests {
                 public_keys: vec![StacksPublicKey::from_hex(
                     "02d8015134d9db8178ac93acbc43170a2f20febba5087a5b0437058765ad5133d0",
                 )
-                .unwrap()],
+                    .unwrap()],
                 num_sigs: 1,
                 hash_mode: AddressHashMode::SerializeP2PKH,
             },
@@ -1187,14 +1177,14 @@ mod tests {
                 &hex_bytes("3c07a0a93360bc85047bbaadd49e30c8af770f73a37e10fec400174d2e5f27d0")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 444,
             block_height: 124,
             burn_parent_modulus: (123 % BURN_BLOCK_MINED_AT_MODULUS) as u8,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         let block_commit_3 = LeaderBlockCommitOp {
@@ -1203,12 +1193,12 @@ mod tests {
                 &hex_bytes("2222222222222222222222222222222222222222222222222222222222222224")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             new_seed: VRFSeed::from_bytes(
                 &hex_bytes("3333333333333333333333333333333333333333333333333333333333333335")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             parent_block_ptr: 113,
             parent_vtxindex: 111,
             key_block_ptr: 121,
@@ -1221,7 +1211,7 @@ mod tests {
                 public_keys: vec![StacksPublicKey::from_hex(
                     "02d8015134d9db8178ac93acbc43170a2f20febba5087a5b0437058765ad5133d0",
                 )
-                .unwrap()],
+                    .unwrap()],
                 num_sigs: 1,
                 hash_mode: AddressHashMode::SerializeP2PKH,
             },
@@ -1232,14 +1222,14 @@ mod tests {
                 &hex_bytes("301dc687a9f06a1ae87a013f27133e9cec0843c2983567be73e185827c7c13de")
                     .unwrap(),
             )
-            .unwrap(),
+                .unwrap(),
             vtxindex: 445,
             block_height: 124,
             burn_parent_modulus: (123 % BURN_BLOCK_MINED_AT_MODULUS) as u8,
             burn_header_hash: BurnchainHeaderHash::from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000004",
             )
-            .unwrap(),
+                .unwrap(),
         };
 
         /*

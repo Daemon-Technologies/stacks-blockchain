@@ -2668,6 +2668,7 @@ impl SortitionDB {
     /// Get the canonical burn chain tip -- the tip of the longest burn chain we know about.
     /// Break ties deterministically by ordering on burnchain block hash.
     pub fn get_canonical_burn_chain_tip(conn: &Connection) -> Result<BlockSnapshot, db_error> {
+        println!("进入get_canonical_burn_chain_tip方法");
         let qry = "SELECT * FROM snapshots WHERE pox_valid = 1 ORDER BY block_height DESC, burn_header_hash ASC LIMIT 1";
         query_row(conn, qry, NO_PARAMS)
             .map(|opt| opt.expect("CORRUPTION: No canonical burnchain tip"))
@@ -2730,11 +2731,13 @@ impl SortitionDB {
     pub fn get_canonical_stacks_chain_tip_hash(
         conn: &Connection,
     ) -> Result<(ConsensusHash, BlockHeaderHash), db_error> {
+        println!("进入get_canonical_stacks_chain_tip_hash方法");
         let sn = SortitionDB::get_canonical_burn_chain_tip(conn)?;
-
+        println!("退出get_canonical_burn_chain_tip方法，获取到snapshot: {:?}", sn);
         let stacks_block_hash = sn.canonical_stacks_tip_hash;
         let consensus_hash = sn.canonical_stacks_tip_consensus_hash;
-
+        println!("get_canonical_stacks_chain_tip_hash中信息: stacks_block_hash: {:?}, consensus_hash:{:?}", stacks_block_hash, consensus_hash);
+        println!("退出get_canonical_stacks_chain_tip_hash方法");
         Ok((consensus_hash, stacks_block_hash))
     }
 
