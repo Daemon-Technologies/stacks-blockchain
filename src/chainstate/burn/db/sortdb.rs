@@ -2731,10 +2731,8 @@ impl SortitionDB {
         conn: &Connection,
     ) -> Result<(ConsensusHash, BlockHeaderHash), db_error> {
         let sn = SortitionDB::get_canonical_burn_chain_tip(conn)?;
-
         let stacks_block_hash = sn.canonical_stacks_tip_hash;
         let consensus_hash = sn.canonical_stacks_tip_consensus_hash;
-
         Ok((consensus_hash, stacks_block_hash))
     }
 
