@@ -223,6 +223,7 @@ impl BitcoinIndexer {
             }
 
             let duration = time::Duration::from_millis((backoff * 1_000.0) as u64);
+            // sleep Gavin1
             thread::sleep(duration);
         }
     }

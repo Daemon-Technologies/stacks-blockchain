@@ -1184,6 +1184,7 @@ impl InitializedNeonNode {
                     debug!("Using key {:?}", &key.vrf_public_key);
                     // sleep a little before building the anchor block, to give any broadcasted
                     //   microblocks time to propagate.
+                    //sleep Gavin 8 60秒睡眠
                     thread::sleep(std::time::Duration::from_millis(self.sleep_before_tenure));
                     self.relay_channel
                         .send(RelayerDirective::RunTenure(key.clone(), burnchain_tip))
