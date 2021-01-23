@@ -130,6 +130,8 @@ impl NetworkState {
                                 backoff, addr
                             );
                             //sleep Gavin2
+                            println!("sleep Gavin2");
+                            println!("bind_address 方法进入 {:?} 秒睡眠", backoff);
                             sleep_ms(backoff);
                             backoff = count + (rng.next_u64() % count);
                             count += count;

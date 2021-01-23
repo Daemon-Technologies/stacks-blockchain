@@ -224,6 +224,8 @@ impl BitcoinIndexer {
 
             let duration = time::Duration::from_millis((backoff * 1_000.0) as u64);
             // sleep Gavin1
+            println!("sleep Gavin1");
+            println!("connect_handshake_backoff 方法进入 {:?} 秒睡眠", backoff);
             thread::sleep(duration);
         }
     }

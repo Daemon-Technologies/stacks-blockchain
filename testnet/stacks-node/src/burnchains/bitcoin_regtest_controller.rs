@@ -5,7 +5,6 @@ use async_std::io::ReadExt;
 use async_std::net::TcpStream;
 use base64::encode;
 use chrono::Utc;
-use chrono::Utc;
 use http_types::{Method, Request, Url};
 use serde::Serialize;
 use serde_json::value::RawValue;

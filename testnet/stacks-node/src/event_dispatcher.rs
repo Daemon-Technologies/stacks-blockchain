@@ -106,6 +106,8 @@ impl EventObserver {
                 }
             }
             //sleep Gavin7
+            println!("sleep Gavin7");
+            println!("send_payload 方法进入 {:?} 秒睡眠", backoff);
             sleep(backoff);
         }
     }

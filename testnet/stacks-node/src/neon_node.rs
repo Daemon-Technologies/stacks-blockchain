@@ -1210,23 +1210,26 @@ impl InitializedNeonNode {
                     //   microblocks time to propagate.
 
                     //sleep Gavin 8 60秒睡眠
-                    println!("relayer_issue_tenure方法开始进入Active并进入睡眠: {:?}", Utc::now());
+                    println!("sleep Gavin8");
+                    println!("relayer_issue_tenure方法开始进入Active并进入60秒睡眠: {:?}", Utc::now());
                     thread::sleep(std::time::Duration::from_millis(self.sleep_before_tenure));
                     println!("relayer_issue_tenure方法开始进入Active并退出睡眠: {:?}", Utc::now());
                     println!("relayer_issue_tenure方法开始relay_channel.send(RelayerDirective::RunTenure(key.clone(), burnchain_tip)): {:?}", Utc::now());
-                    self.relay_channel
+                    let r = self.relay_channel
                         .send(RelayerDirective::RunTenure(key.clone(), burnchain_tip))
-                        .is_ok()
+                        .is_ok();
                     println!("relayer_issue_tenure方法结束relay_channel.send(RelayerDirective::RunTenure(key.clone(), burnchain_tip)): {:?}", Utc::now());
                     println!("relayer_issue_tenure方法结束Active: {:?}", Utc::now());
+                    r
                 }
                 LeaderKeyRegistrationState::Pending => true,
             }
         } else {
             warn!("Do not know the last burn block. As a miner, this is bad.");
+            println!("relayer_issue_tenure else方法结束: {:?}",Utc::now());
             true
         }
-        println!("relayer_issue_tenure方法结束: {:?}",Utc::now());
+        
     }
 
     /// Notify the relayer of a sortition, telling it to process the block
