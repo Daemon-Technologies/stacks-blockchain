@@ -371,9 +371,11 @@ impl RunLoop {
 
                     // Have the node process the new block, that can include, or not, a sortition.
                     // TODO 获取到了获胜信息
-                    println!("block_to_porcess开始node.process_burnchain_state", Utc::now());
+                    let start = Utc::now();
+                    println!("block_to_porcess开始node.process_burnchain_state: {:?}", start);
                     node.process_burnchain_state(burnchain.sortdb_mut(), sortition_id, ibd);
-                    println!("block_to_porcess结束node.process_burnchain_state", Utc::now());
+                    let end = Utc::now();
+                    println!("block_to_porcess结束node.process_burnchain_state: {:?}", end - start);
                     // Now, tell the relayer to check if it won a sortition during this block,
                     //   and, if so, to process and advertize the block
                     //
