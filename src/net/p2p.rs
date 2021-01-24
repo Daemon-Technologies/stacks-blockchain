@@ -4207,7 +4207,7 @@ impl PeerNetwork {
         handler_args: &RPCHandlerArgs,
         attachment_requests: &mut HashSet<AttachmentInstance>,
     ) -> Result<NetworkResult, net_error> {
-        println!(">>>>>>>>>>>>>>>>>>>>>>> Begin Network Dispatch 开始 >>>>>>>>>>>>>>>>>>>>>>>>>>>>: {:?}",Utc::now());
+        //println!(">>>>>>>>>>>>>>>>>>>>>>> Begin Network Dispatch 开始 >>>>>>>>>>>>>>>>>>>>>>>>>>>>: {:?}",Utc::now());
         debug!(">>>>>>>>>>>>>>>>>>>>>>> Begin Network Dispatch (poll for {}) >>>>>>>>>>>>>>>>>>>>>>>>>>>>", poll_timeout);
         let mut poll_states = match self.network {
             None => {
@@ -4270,7 +4270,7 @@ impl PeerNetwork {
             download_backpressure,
             p2p_poll_state,
         )?;
-        println!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< End Network Dispatch 结束<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<: {:?}",Utc::now());
+        //println!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< End Network Dispatch 结束<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<: {:?}",Utc::now());
         debug!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< End Network Dispatch <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
         Ok(network_result)
     }

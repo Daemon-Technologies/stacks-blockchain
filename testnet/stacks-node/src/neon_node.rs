@@ -620,24 +620,24 @@ fn spawn_peer(
                     &mut expected_attachments,
                 ) {
                     Ok(network_result) => {
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_p2p_state_pass(): {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_p2p_state_pass(): {:?}", Utc::now());
                         if num_p2p_state_machine_passes < network_result.num_state_machine_passes {
                             // p2p state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_p2p_state_pass();
                             num_p2p_state_machine_passes = network_result.num_state_machine_passes;
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_inv_sync_pass(): {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_inv_sync_pass(): {:?}", Utc::now());
                         if num_inv_sync_passes < network_result.num_inv_sync_passes {
                             // inv-sync state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_inv_sync_pass();
                             num_inv_sync_passes = network_result.num_inv_sync_passes;
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 push_back(RelayerDirective::HandleNetResult(network_result)): {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处理 push_back(RelayerDirective::HandleNetResult(network_result)): {:?}", Utc::now());
                         if network_result.has_data_to_store() {
                             results_with_data
                                 .push_back(RelayerDirective::HandleNetResult(network_result));
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处 results_with_data.push_back(RelayerDirective::RunMicroblockTenure);: {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处 results_with_data.push_back(RelayerDirective::RunMicroblockTenure);: {:?}", Utc::now());
                         // only do this on the Ok() path, even if we're mining, because an error in
                         // network dispatching is likely due to resource exhaustion
                         if mblock_deadline < get_epoch_time_ms() {
@@ -645,7 +645,7 @@ fn spawn_peer(
                             mblock_deadline =
                                 get_epoch_time_ms() + (config.node.microblock_frequency as u128);
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}", Utc::now());
                     }
                     Err(e) => {
                         error!("P2P: Failed to process network dispatch: {:?}", &e);

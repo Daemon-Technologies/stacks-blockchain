@@ -946,6 +946,10 @@ impl Relayer {
         println!("process_new_blocks获取tip_sort_id: {:?}", tip_sort_id);
         let mut store_downloaded_blocks = true;
         println!("process_new_blocks最初获取store_downloaded_blocks: {:?}", store_downloaded_blocks);
+        
+        println!("process_new_blocks一进去的network_result.blocks为 : {:?}", network_result.blocks);
+        println!("process_new_blocks一进去的network_result.pushed_blocks为 : {:?}", network_result.pushed_blocks);
+        
 
         {
             let sort_ic = sortdb.index_conn();
