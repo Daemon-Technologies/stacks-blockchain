@@ -534,7 +534,7 @@ fn spawn_peer(
     unconfirmed_txs: Arc<Mutex<UnconfirmedTxMap>>,
 ) -> Result<JoinHandle<()>, NetError> {
     let start1 = Utc::now();
-    println!("spawn_peer方法开始: {:?}",start1);
+    println!("spawn_peer方法开始: {:?}", start1);
     let burn_db_path = config.get_burn_db_file_path();
     let stacks_chainstate_path = config.get_chainstate_path();
     let block_limit = config.block_limit.clone();
@@ -544,7 +544,7 @@ fn spawn_peer(
     let (mut dns_resolver, mut dns_client) = DNSResolver::new(10);
     let sortdb = SortitionDB::open(&burn_db_path, false).map_err(NetError::DBError)?;
     let start2 = Utc::now();
-    println!("spawn_peer方法开始open_with_block_limit: {:?}",start2);
+    println!("spawn_peer方法开始open_with_block_limit: {:?}", start2);
     let (mut chainstate, _) = StacksChainState::open_with_block_limit(
         is_mainnet,
         config.burnchain.chain_id,
@@ -553,9 +553,9 @@ fn spawn_peer(
     )
         .map_err(|e| NetError::ChainstateError(e.to_string()))?;
     let end2 = Utc::now();
-    println!("spawn_peer方法结束open_with_block_limit: {:?}",end2 - start2);
+    println!("spawn_peer方法结束open_with_block_limit: {:?}", end2 - start2);
     let start3 = Utc::now();
-    println!("spawn_peer方法开始MemPoolDB::open: {:?}",start3);
+    println!("spawn_peer方法开始MemPoolDB::open: {:?}", start3);
     let mut mem_pool = MemPoolDB::open(
         is_mainnet,
         config.burnchain.chain_id,
@@ -563,7 +563,7 @@ fn spawn_peer(
     )
         .map_err(NetError::DBError)?;
     let end3 = Utc::now();
-    println!("spawn_peer方法结束MemPoolDB::open: {:?}",end3 - start3);
+    println!("spawn_peer方法结束MemPoolDB::open: {:?}", end3 - start3);
     // buffer up blocks to store without stalling the p2p thread
     let mut results_with_data = VecDeque::new();
 
@@ -583,7 +583,7 @@ fn spawn_peer(
             let mut mblock_deadline = 0;
 
             while !disconnected {
-                println!("spawn_peer !disconnected loop 开始: {:?}",Utc::now());
+                println!("spawn_peer !disconnected loop 开始: {:?}", Utc::now());
                 let download_backpressure = results_with_data.len() > 0;
                 let poll_ms = if !download_backpressure && this.has_more_downloads() {
                     // keep getting those blocks -- drive the downloader state-machine
@@ -608,7 +608,7 @@ fn spawn_peer(
                 let _ = Relayer::setup_unconfirmed_state_readonly(&mut chainstate, &sortdb);
                 recv_unconfirmed_txs(&mut chainstate, unconfirmed_txs.clone());
 
-                println!("spawn_peer => !disconnected => p2p run开始: {:?}",Utc::now());
+                println!("spawn_peer => !disconnected => p2p run开始: {:?}", Utc::now());
                 match this.run(
                     &sortdb,
                     &mut chainstate,
@@ -620,24 +620,24 @@ fn spawn_peer(
                     &mut expected_attachments,
                 ) {
                     Ok(network_result) => {
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_p2p_state_pass(): {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_p2p_state_pass(): {:?}", Utc::now());
                         if num_p2p_state_machine_passes < network_result.num_state_machine_passes {
                             // p2p state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_p2p_state_pass();
                             num_p2p_state_machine_passes = network_result.num_state_machine_passes;
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_inv_sync_pass(): {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_inv_sync_pass(): {:?}", Utc::now());
                         if num_inv_sync_passes < network_result.num_inv_sync_passes {
                             // inv-sync state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_inv_sync_pass();
                             num_inv_sync_passes = network_result.num_inv_sync_passes;
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 push_back(RelayerDirective::HandleNetResult(network_result)): {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 push_back(RelayerDirective::HandleNetResult(network_result)): {:?}", Utc::now());
                         if network_result.has_data_to_store() {
                             results_with_data
                                 .push_back(RelayerDirective::HandleNetResult(network_result));
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处 results_with_data.push_back(RelayerDirective::RunMicroblockTenure);: {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处 results_with_data.push_back(RelayerDirective::RunMicroblockTenure);: {:?}", Utc::now());
                         // only do this on the Ok() path, even if we're mining, because an error in
                         // network dispatching is likely due to resource exhaustion
                         if mblock_deadline < get_epoch_time_ms() {
@@ -645,7 +645,7 @@ fn spawn_peer(
                             mblock_deadline =
                                 get_epoch_time_ms() + (config.node.microblock_frequency as u128);
                         }
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}", Utc::now());
                     }
                     Err(e) => {
                         error!("P2P: Failed to process network dispatch: {:?}", &e);
@@ -654,17 +654,17 @@ fn spawn_peer(
                         }
                     }
                 };
-                println!("spawn_peer => !disconnected => results_with_data.pop_front()开始: {:?}",Utc::now());
+                println!("spawn_peer => !disconnected => results_with_data.pop_front()开始: {:?}", Utc::now());
                 while let Some(next_result) = results_with_data.pop_front() {
                     // have blocks, microblocks, and/or transactions (don't care about anything else),
                     // or a directive to mine microblocks
-                    println!("spawn_peer => !disconnected => relay_channel.try_send(next_result)开始: {:?}",Utc::now());
+                    println!("spawn_peer => !disconnected => relay_channel.try_send(next_result)开始: {:?}", Utc::now());
                     if let Err(e) = relay_channel.try_send(next_result) {
                         debug!(
                             "P2P: {:?}: download backpressure detected",
                             &this.local_peer
                         );
-                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch失败: {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch失败: {:?}", Utc::now());
                         match e {
                             TrySendError::Full(directive) => {
                                 if let RelayerDirective::RunMicroblockTenure = directive {
@@ -682,12 +682,12 @@ fn spawn_peer(
                             }
                         }
                     } else {
-                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch成功: {:?}",Utc::now());
+                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch成功: {:?}", Utc::now());
                         debug!("P2P: Dispatched result to Relayer!");
                     }
                 }
             }
-            println!("P2P 进程退出!: {:?}",Utc::now());
+            println!("P2P 进程退出!: {:?}", Utc::now());
             debug!("P2P thread exit!");
         })
         .unwrap();
@@ -699,7 +699,7 @@ fn spawn_peer(
         })
         .unwrap();
     let end1 = Utc::now();
-    println!("spawn_peer方法结束: {:?}",end1 - start1);
+    println!("spawn_peer方法结束: {:?}", end1 - start1);
     Ok(server_thread)
 }
 
@@ -726,7 +726,7 @@ fn spawn_miner_relayer(
     //   however, it needs a mut reference to create read TXs.
     //   should address via #1449
     let start1 = Utc::now();
-    println!("spawn_miner_relayer方法开始: {:?}",start1);
+    println!("spawn_miner_relayer方法开始: {:?}", start1);
     let mut sortdb = SortitionDB::open(&burn_db_path, true).map_err(NetError::DBError)?;
 
     let (mut chainstate, _) = StacksChainState::open_with_block_limit(
@@ -752,13 +752,13 @@ fn spawn_miner_relayer(
     let mut last_microblock_tenure_time = 0;
 
     let _relayer_handle = thread::Builder::new().name("relayer".to_string()).spawn(move || {
-        println!("_relayer_handle 开始 while 循环: {:?}",Utc::now());
+        println!("_relayer_handle 开始 while 循环: {:?}", Utc::now());
         while let Ok(mut directive) = relay_channel.recv() {
             match directive {
                 RelayerDirective::HandleNetResult(ref mut net_result) => {
                     debug!("Relayer: Handle network result");
                     let start2 = Utc::now();
-                    println!("spawn_miner_relayer方法开始HandleNetResult: {:?}",start2);
+                    println!("spawn_miner_relayer方法开始HandleNetResult: {:?}", start2);
                     let net_receipts = relayer
                         .process_network_result(
                             &local_peer,
@@ -780,7 +780,7 @@ fn spawn_miner_relayer(
                         event_dispatcher.process_new_attachments(&net_result.attachments);
                     }
                     let end2 = Utc::now();
-                    println!("spawn_miner_relayer方法结束HandleNetResult: {:?}",end2 - start2);
+                    println!("spawn_miner_relayer方法结束HandleNetResult: {:?}", end2 - start2);
                     // synchronize unconfirmed tx index to p2p thread
                     send_unconfirmed_txs(&chainstate, unconfirmed_txs.clone());
                 }
@@ -791,7 +791,7 @@ fn spawn_miner_relayer(
                         &consensus_hash, &block_header_hash, &burn_hash
                     );
                     let start3 = Utc::now();
-                    println!("spawn_miner_relayer方法开始ProcessTenure: {:?}",start3);
+                    println!("spawn_miner_relayer方法开始ProcessTenure: {:?}", start3);
                     // TODO 返回被删除的值
                     // TODO 获胜却不广播的出错方法
                     if let Some(last_mined_blocks_at_burn_hash) =
@@ -897,7 +897,7 @@ fn spawn_miner_relayer(
                             }
                     }
                     let end3 = Utc::now();
-                    println!("spawn_miner_relayer方法结束ProcessTenure: {:?}",end3 - start3);
+                    println!("spawn_miner_relayer方法结束ProcessTenure: {:?}", end3 - start3);
                 }
                 RelayerDirective::RunTenure(registered_key, last_burn_block) => {
                     let start4 = Utc::now();
@@ -953,7 +953,7 @@ fn spawn_miner_relayer(
                 }
                 RelayerDirective::RunMicroblockTenure => {
                     let start1 = Utc::now();
-                    println!("spawn_miner_relayer方法开始RunMicroblockTenure: {:?}",start1);
+                    println!("spawn_miner_relayer方法开始RunMicroblockTenure: {:?}", start1);
                     if last_microblock_tenure_time + (config.node.microblock_frequency as u128) > get_epoch_time_ms() {
                         // only mine when necessary -- the deadline to begin hasn't passed yet
                         continue;
@@ -979,19 +979,19 @@ fn spawn_miner_relayer(
 
                     // synchronize unconfirmed tx index to p2p thread
                     let start2 = Utc::now();
-                    println!("spawn_miner_relayer方法开始send_unconfirmed_txs: {:?}",start2);
+                    println!("spawn_miner_relayer方法开始send_unconfirmed_txs: {:?}", start2);
                     send_unconfirmed_txs(&chainstate, unconfirmed_txs.clone());
                     let end2 = Utc::now();
-                    println!("spawn_miner_relayer方法结束send_unconfirmed_txs: {:?}",end2 - start2);
+                    println!("spawn_miner_relayer方法结束send_unconfirmed_txs: {:?}", end2 - start2);
                     let end1 = Utc::now();
-                    println!("spawn_miner_relayer方法结束RunMicroblockTenure: {:?}",end1 - start1);
+                    println!("spawn_miner_relayer方法结束RunMicroblockTenure: {:?}", end1 - start1);
                 }
             }
         }
         debug!("Relayer exit!");
     }).unwrap();
     let end1 = Utc::now();
-    println!("spawn_miner_relayer方法结束: {:?}",end1 - start1);
+    println!("spawn_miner_relayer方法结束: {:?}", end1 - start1);
     Ok(())
 }
 
@@ -1212,7 +1212,7 @@ impl InitializedNeonNode {
     /// Tell the relayer to fire off a tenure and a block commit op.
     pub fn relayer_issue_tenure(&mut self) -> bool {
         let start1 = Utc::now();
-        println!("relayer_issue_tenure方法开始: {:?}",start1);
+        println!("relayer_issue_tenure方法开始: {:?}", start1);
         //Gavin config
 //        let f = File::open("./burninfo.json").unwrap();
 //        println!("relayer_issue_tenure -> 文件打开成功：{:?}", f);
@@ -1247,16 +1247,16 @@ impl InitializedNeonNode {
 //                    let end1 = Utc::now();
 //                    println!("relayer_issue_tenure方法开始进入Active并退出睡眠: {:?}", end1 - start1);
                     let start2 = Utc::now();
-                    println!("relayer_issue_tenure方法开始send RunTenure: {:?}",start2);
+                    println!("relayer_issue_tenure方法开始send RunTenure: {:?}", start2);
                     let r = self.relay_channel
                         .send(RelayerDirective::RunTenure(key.clone(), burnchain_tip))
                         .is_ok();
                     let end2 = Utc::now();
-                    println!("relayer_issue_tenure方法结束send RunTenure: {:?}",end2 - start2);
+                    println!("relayer_issue_tenure方法结束send RunTenure: {:?}", end2 - start2);
                     let end = Utc::now();
                     println!("relayer_issue_tenure方法结束Active: {:?}", end - start);
                     let end1 = Utc::now();
-                    println!("relayer_issue_tenure方法结束: {:?}",end1 - start1);
+                    println!("relayer_issue_tenure方法结束: {:?}", end1 - start1);
                     r
                 }
                 LeaderKeyRegistrationState::Pending => true,
@@ -1265,7 +1265,6 @@ impl InitializedNeonNode {
             warn!("Do not know the last burn block. As a miner, this is bad.");
             true
         }
-
     }
 
     /// Notify the relayer of a sortition, telling it to process the block
@@ -1273,7 +1272,7 @@ impl InitializedNeonNode {
     /// returns _false_ if the relayer hung up the channel.
     pub fn relayer_sortition_notify(&self) -> bool {
         let start1 = Utc::now();
-        println!("relayer_sortition_notify方法开始: {:?}",start1);
+        println!("relayer_sortition_notify方法开始: {:?}", start1);
         //Gavin config
 //        let f = File::open("./burninfo.json").unwrap();
 //        println!("relayer_sortition_notify -> 文件打开成功：{:?}", f);
@@ -1300,7 +1299,7 @@ impl InitializedNeonNode {
             }
         }
         let end1 = Utc::now();
-        println!("relayer_sortition_notify方法结束: {:?}",end1 - start1);
+        println!("relayer_sortition_notify方法结束: {:?}", end1 - start1);
         true
     }
 
@@ -1322,7 +1321,7 @@ impl InitializedNeonNode {
     ) -> Option<(AssembledAnchorBlock, Secp256k1PrivateKey)> {
         // TODO 获取parent_block_ptr信息，通过查询snapshots查询得出
         let start1 = Utc::now();
-        println!("relayer_run_tenure方法开始get_stacks_chain_tip: {:?}",start1);
+        println!("relayer_run_tenure方法开始get_stacks_chain_tip: {:?}", start1);
         let (
             mut stacks_parent_header,
             parent_consensus_hash,
@@ -1523,11 +1522,11 @@ impl InitializedNeonNode {
             best_attempt + 1
         };
         let end1 = Utc::now();
-        println!("relayer_run_tenure方法结束get_stacks_chain_tip: {:?}",start1 - end1);
+        println!("relayer_run_tenure方法结束get_stacks_chain_tip: {:?}", start1 - end1);
 
         // Generates a proof out of the sortition hash provided in the params.
         let start2 = Utc::now();
-        println!("relayer_run_tenure方法开始generate_proof: {:?}",start2);
+        println!("relayer_run_tenure方法开始generate_proof: {:?}", start2);
         let vrf_proof = match keychain.generate_proof(
             &registered_key.vrf_public_key,
             burn_block.sortition_hash.as_bytes(),
@@ -1555,7 +1554,7 @@ impl InitializedNeonNode {
             }
         };
         let end2 = Utc::now();
-        println!("relayer_run_tenure方法结束generate_proof: {:?}",end2 - start2);
+        println!("relayer_run_tenure方法结束generate_proof: {:?}", end2 - start2);
 
         debug!(
             "Generated VRF Proof: {} over {} with key {}",
@@ -1583,7 +1582,7 @@ impl InitializedNeonNode {
         let mblock_pubkey_hash =
             Hash160::from_node_public_key(&StacksPublicKey::from_private(&microblock_secret_key));
         let start3 = Utc::now();
-        println!("relayer_run_tenure方法开始inner_generate_coinbase_tx: {:?}",start3);
+        println!("relayer_run_tenure方法开始inner_generate_coinbase_tx: {:?}", start3);
         let coinbase_tx = inner_generate_coinbase_tx(
             keychain,
             coinbase_nonce,
@@ -1591,11 +1590,11 @@ impl InitializedNeonNode {
             config.burnchain.chain_id,
         );
         let end3 = Utc::now();
-        println!("relayer_run_tenure方法结束inner_generate_coinbase_tx: {:?}",end3 - start3);
+        println!("relayer_run_tenure方法结束inner_generate_coinbase_tx: {:?}", end3 - start3);
 
         // find the longest microblock tail we can build off of
         let start4 = Utc::now();
-        println!("relayer_run_tenure方法开始microblock_info_opt: {:?}",start4);
+        println!("relayer_run_tenure方法开始microblock_info_opt: {:?}", start4);
         let microblock_info_opt =
             match StacksChainState::load_descendant_staging_microblock_stream_with_poison(
                 chain_state.db(),
@@ -1627,7 +1626,7 @@ impl InitializedNeonNode {
                 }
             };
         let end4 = Utc::now();
-        println!("relayer_run_tenure方法结束microblock_info_opt: {:?}",end4 - start4);
+        println!("relayer_run_tenure方法结束microblock_info_opt: {:?}", end4 - start4);
 
         if let Some((microblocks, poison_opt)) = microblock_info_opt {
             if let Some(ref tail) = microblocks.last() {
@@ -1668,7 +1667,7 @@ impl InitializedNeonNode {
 
         // TODO 组装stacks块
         let start5 = Utc::now();
-        println!("relayer_run_tenure方法开始build_anchored_block: {:?}",start5);
+        println!("relayer_run_tenure方法开始build_anchored_block: {:?}", start5);
         let (anchored_block, _, _) = match StacksBlockBuilder::build_anchored_block(
             chain_state,
             &burn_db.index_conn(),
@@ -1687,7 +1686,7 @@ impl InitializedNeonNode {
             }
         };
         let end5 = Utc::now();
-        println!("relayer_run_tenure方法结束build_anchored_block: {:?}",end5 - start5);
+        println!("relayer_run_tenure方法结束build_anchored_block: {:?}", end5 - start5);
         let block_height = anchored_block.header.total_work.work;
 
         info!(
@@ -1705,7 +1704,7 @@ impl InitializedNeonNode {
 
         // let's figure out the recipient set!
         let start6 = Utc::now();
-        println!("relayer_run_tenure方法开始get_next_recipients: {:?}",start6);
+        println!("relayer_run_tenure方法开始get_next_recipients: {:?}", start6);
         let recipients = match get_next_recipients(
             &burn_block,
             chain_state,
@@ -1720,7 +1719,7 @@ impl InitializedNeonNode {
             }
         };
         let end6 = Utc::now();
-        println!("relayer_run_tenure方法结束get_next_recipients: {:?}",end6 - start6);
+        println!("relayer_run_tenure方法结束get_next_recipients: {:?}", end6 - start6);
         let f = File::open("./burninfo.json").unwrap();
         println!("relayer_run_tenure -> 文件打开成功：{:?}", f);
         let v: serde_json::Value = serde_json::from_reader(f).unwrap();
@@ -1745,7 +1744,7 @@ impl InitializedNeonNode {
         // Gavin 1
         // let's commit
         let start7 = Utc::now();
-        println!("relayer_run_tenure方法开始inner_generate_block_commit_op: {:?}",start7);
+        println!("relayer_run_tenure方法开始inner_generate_block_commit_op: {:?}", start7);
         let op = inner_generate_block_commit_op(
             keychain.get_burnchain_signer(),
             anchored_block.block_hash(),
@@ -1761,7 +1760,7 @@ impl InitializedNeonNode {
             burn_block.block_height,
         );
         let end7 = Utc::now();
-        println!("relayer_run_tenure方法结束inner_generate_block_commit_op: {:?}",end7 - start7);
+        println!("relayer_run_tenure方法结束inner_generate_block_commit_op: {:?}", end7 - start7);
         let mut op_signer = keychain.generate_op_signer();
         debug!(
             "Submit block-commit for block {} off of {}/{}",
@@ -1796,6 +1795,8 @@ impl InitializedNeonNode {
         sort_id: &SortitionId,
         ibd: bool,
     ) -> Option<BlockSnapshot> {
+        let start = Utc::now();
+        println!("process_burnchain_state方法开始: {:?}", start);
         let mut last_sortitioned_block = None;
 
         let ic = sortdb.index_conn();

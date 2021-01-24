@@ -349,35 +349,45 @@ impl RunLoop {
 
             let sortition_tip = &burnchain_tip.block_snapshot.sortition_id;
             let next_height = burnchain_tip.block_snapshot.block_height;
-            println!("start方法开始进入next_height>block_height: {:?}", Utc::now());
+            println!("start方法进入next_height > block_height之前: next_height: {:?}, block_height: {:?}", next_height, block_height);
             if next_height > block_height {
+                let start = Utc::now();
+                println!("start方法开始进入next_height>block_height: {:?}", start);
                 // first, let's process all blocks in (block_height, next_height]
-                println!("start方法开始block_to_porcess: {:?}", Utc::now());
+                let start1 = Utc::now();
+                println!("start方法开始block_to_porcess: {:?}", start1);
                 for block_to_process in (block_height + 1)..(next_height + 1) {
+                    println!("start方法进入block_to_porcess: {:?}", Utc::now());
                     let block = {
                         let ic = burnchain.sortdb_ref().index_conn();
                         SortitionDB::get_ancestor_snapshot(&ic, block_to_process, sortition_tip)
                             .unwrap()
                             .expect("Failed to find block in fork processed by bitcoin indexer")
                     };
+                    println!("block_to_porcess获取block:{:?}", block);
                     let sortition_id = &block.sortition_id;
+
+                    println!("block_to_porcess获取sortition_id:{:?}", sortition_id);
 
                     // Have the node process the new block, that can include, or not, a sortition.
                     // TODO 获取到了获胜信息
+                    println!("block_to_porcess开始node.process_burnchain_state", Utc::now());
                     node.process_burnchain_state(burnchain.sortdb_mut(), sortition_id, ibd);
-
+                    println!("block_to_porcess结束node.process_burnchain_state", Utc::now());
                     // Now, tell the relayer to check if it won a sortition during this block,
                     //   and, if so, to process and advertize the block
                     //
                     // _this will block if the relayer's buffer is full_
                     // TODO 广播获胜信息入口
+                    println!("block_to_porcess开始node.relayer_sortition_notify(): {:?}", Utc::now());
                     if !node.relayer_sortition_notify() {
                         // relayer hung up, exit.
                         error!("Block relayer and miner hung up, exiting.");
                         return;
                     }
                 }
-                println!("start方法结束block_to_porcess: {:?}", Utc::now());
+                let end1 = Utc::now();
+                println!("start方法结束block_to_porcess: {:?}", end1 - start);
 
                 block_height = next_height;
                 debug!(
