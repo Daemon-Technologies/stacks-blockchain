@@ -17,54 +17,48 @@
  along with Blockstack. If not, see <http://www.gnu.org/licenses/>.
 */
 
-use std::cmp;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
+use chrono::Utc;
+use rand::prelude::*;
+use rand::Rng;
+use rand::thread_rng;
 
-use core::mempool::MemPoolDB;
-
-use net::chat::*;
-use net::connection::*;
-use net::db::*;
-use net::http::*;
-use net::p2p::*;
-use net::poll::*;
-use net::rpc::*;
-use net::Error as net_error;
-use net::*;
-
+use burnchains::Burnchain;
+use burnchains::BurnchainView;
 use chainstate::burn::ConsensusHash;
+use chainstate::burn::db::sortdb::{
+    PoxId, SortitionDB, SortitionDBConn, SortitionHandleConn, SortitionId,
+};
 use chainstate::coordinator::comm::CoordinatorChannels;
 use chainstate::stacks::db::{StacksChainState, StacksEpochReceipt, StacksHeaderInfo};
 use chainstate::stacks::events::StacksTransactionReceipt;
 use chainstate::stacks::StacksBlockHeader;
 use chainstate::stacks::StacksBlockId;
-
 use core::mempool::*;
-
-use chainstate::burn::db::sortdb::{
-    PoxId, SortitionDB, SortitionDBConn, SortitionHandleConn, SortitionId,
-};
-
-use burnchains::Burnchain;
-use burnchains::BurnchainView;
-
+use core::mempool::MemPoolDB;
+use net::*;
+use net::chat::*;
+use net::connection::*;
+use net::db::*;
+use net::Error as net_error;
+use net::http::*;
+use net::p2p::*;
+use net::poll::*;
+use net::rpc::*;
+use std::cmp;
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use util::get_epoch_time_secs;
 use util::hash::Sha512Trunc256Sum;
-
-use rand::prelude::*;
-use rand::thread_rng;
-use rand::Rng;
-
 use vm::costs::ExecutionCost;
 
 pub type BlocksAvailableMap = HashMap<BurnchainHeaderHash, (u64, ConsensusHash)>;
 
 pub const MAX_RELAYER_STATS: usize = 4096;
 pub const MAX_RECENT_MESSAGES: usize = 256;
-pub const MAX_RECENT_MESSAGE_AGE: usize = 600; // seconds; equal to the expected epoch length
+pub const MAX_RECENT_MESSAGE_AGE: usize = 600;
+// seconds; equal to the expected epoch length
 pub const RELAY_DUPLICATE_INFERENCE_WARMUP: usize = 128;
 
 pub struct Relayer {
@@ -501,37 +495,37 @@ impl Relayer {
         let db_handle = SortitionHandleConn::open_reader_consensus(sort_ic, consensus_hash)?;
         let parent_block_snapshot = match db_handle
             .get_block_snapshot_of_parent_stacks_block(consensus_hash, &block.block_hash())
-        {
-            Ok(Some((_, sn))) => {
-                debug!(
-                    "Parent of {}/{} is {}/{}",
-                    consensus_hash,
-                    block.block_hash(),
-                    sn.consensus_hash,
-                    sn.winning_stacks_block_hash
-                );
-                sn
-            }
-            Ok(None) => {
-                debug!(
-                    "Received block with unknown parent snapshot: {}/{}",
-                    consensus_hash,
-                    &block.block_hash()
-                );
-                return Ok(false);
-            }
-            Err(db_error::InvalidPoxSortition) => {
-                warn!(
-                    "Received block {}/{} on a non-canonical PoX sortition",
-                    consensus_hash,
-                    &block.block_hash()
-                );
-                return Ok(false);
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        };
+            {
+                Ok(Some((_, sn))) => {
+                    debug!(
+                        "Parent of {}/{} is {}/{}",
+                        consensus_hash,
+                        block.block_hash(),
+                        sn.consensus_hash,
+                        sn.winning_stacks_block_hash
+                    );
+                    sn
+                }
+                Ok(None) => {
+                    debug!(
+                        "Received block with unknown parent snapshot: {}/{}",
+                        consensus_hash,
+                        &block.block_hash()
+                    );
+                    return Ok(false);
+                }
+                Err(db_error::InvalidPoxSortition) => {
+                    warn!(
+                        "Received block {}/{} on a non-canonical PoX sortition",
+                        consensus_hash,
+                        &block.block_hash()
+                    );
+                    return Ok(false);
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            };
 
         chainstate.preprocess_anchored_block(
             sort_ic,
@@ -627,6 +621,8 @@ impl Relayer {
         network_result: &mut NetworkResult,
         chainstate: &mut StacksChainState,
     ) -> HashSet<ConsensusHash> {
+        let start = Utc::now();
+        println!("preprocess_downloaded_blocks方法开始: {:?}", start);
         let mut new_blocks = HashSet::new();
 
         for (consensus_hash, block, download_time) in network_result.blocks.iter() {
@@ -638,17 +634,22 @@ impl Relayer {
                 *download_time,
             ) {
                 Ok(accepted) => {
+                    println!("preprocess_downloaded_blocks方法accepted: {:?}", accepted);
                     if accepted {
+                        println!("preprocess_downloaded_blocks方法accepted: consensus_hash: {:?}", consensus_hash);
                         new_blocks.insert((*consensus_hash).clone());
                     }
                 }
                 Err(chainstate_error::InvalidStacksBlock(msg)) => {
+                    println!("preprocess_downloaded_blocks方法chainstate_error: msg: {:?}", msg);
                     warn!("Downloaded invalid Stacks block: {}", msg);
                     // NOTE: we can't punish the neighbor for this, since we could have been
                     // MITM'ed in our download.
                     continue;
                 }
                 Err(e) => {
+                    println!("preprocess_downloaded_blocks方法Could not process downloaded Stacks block\
+                    : consensus_hash: {:?},block.block_hash(): {:?},e: {:?}", consensus_hash, block.block_hash(), &e);
                     warn!(
                         "Could not process downloaded Stacks block {}/{}: {:?}",
                         consensus_hash,
@@ -658,6 +659,9 @@ impl Relayer {
                 }
             };
         }
+
+        let end = Utc::now();
+        println!("preprocess_downloaded_blocks方法结束: {:?}", end - start);
 
         new_blocks
     }
@@ -671,6 +675,8 @@ impl Relayer {
         network_result: &mut NetworkResult,
         chainstate: &mut StacksChainState,
     ) -> Result<(HashSet<ConsensusHash>, Vec<NeighborKey>), net_error> {
+        let start = Utc::now();
+        println!("preprocess_pushed_blocks方法开始: {:?}", start);
         let mut new_blocks = HashSet::new();
         let mut bad_neighbors = vec![];
 
@@ -722,7 +728,10 @@ impl Relayer {
                         0,
                     ) {
                         Ok(accepted) => {
+                            println!("preprocess_pushed_blocks方法process_new_anchored_block: accepted{:?}", accepted);
                             if accepted {
+                                println!("preprocess_pushed_blocks方法Accepted block: consensus_hash:{:?},\
+                                bhh:{:?},neighbor_key:{:?}", &consensus_hash, &bhh, &neighbor_key);
                                 debug!(
                                     "Accepted block {}/{} from {}",
                                     &consensus_hash, &bhh, &neighbor_key
@@ -731,6 +740,7 @@ impl Relayer {
                             }
                         }
                         Err(chainstate_error::InvalidStacksBlock(msg)) => {
+                            println!("preprocess_pushed_blocks方法chainstate_error: msg{:?}", msg);
                             warn!(
                                 "Invalid pushed Stacks block {}/{}: {}",
                                 &consensus_hash,
@@ -740,6 +750,7 @@ impl Relayer {
                             bad_neighbors.push((*neighbor_key).clone());
                         }
                         Err(e) => {
+                            println!("preprocess_pushed_blocks方法Could not process pushed Stacks block: e{:?}", e);
                             warn!(
                                 "Could not process pushed Stacks block {}/{}: {:?}",
                                 &consensus_hash,
@@ -751,7 +762,8 @@ impl Relayer {
                 }
             }
         }
-
+        let end = Utc::now();
+        println!("preprocess_pushed_blocks方法结束: {:?}", end - start);
         Ok((new_blocks, bad_neighbors))
     }
 
@@ -765,33 +777,33 @@ impl Relayer {
         let mut ret = HashSet::new();
         for (consensus_hash, microblock_stream, _download_time) in
             network_result.confirmed_microblocks.iter()
-        {
-            if microblock_stream.len() == 0 {
-                continue;
-            }
-            let anchored_block_hash = microblock_stream[0].header.prev_block.clone();
+            {
+                if microblock_stream.len() == 0 {
+                    continue;
+                }
+                let anchored_block_hash = microblock_stream[0].header.prev_block.clone();
 
-            for mblock in microblock_stream.iter() {
-                match chainstate.preprocess_streamed_microblock(
-                    consensus_hash,
-                    &anchored_block_hash,
-                    mblock,
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(
-                            "Invalid downloaded microblock {}/{}-{}: {:?}",
-                            consensus_hash,
-                            &anchored_block_hash,
-                            mblock.block_hash(),
-                            &e
-                        );
+                for mblock in microblock_stream.iter() {
+                    match chainstate.preprocess_streamed_microblock(
+                        consensus_hash,
+                        &anchored_block_hash,
+                        mblock,
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(
+                                "Invalid downloaded microblock {}/{}-{}: {:?}",
+                                consensus_hash,
+                                &anchored_block_hash,
+                                mblock.block_hash(),
+                                &e
+                            );
+                        }
                     }
                 }
-            }
 
-            ret.insert((*consensus_hash).clone());
-        }
+                ret.insert((*consensus_hash).clone());
+            }
         ret
     }
 
@@ -886,7 +898,7 @@ impl Relayer {
         for uploaded_mblock in network_result.uploaded_microblocks.iter() {
             for mblock in uploaded_mblock.microblocks.iter() {
                 if let Some((_, mblocks_map)) =
-                    new_microblocks.get_mut(&uploaded_mblock.index_anchor_block)
+                new_microblocks.get_mut(&uploaded_mblock.index_anchor_block)
                 {
                     mblocks_map.insert(mblock.block_hash(), (*mblock).clone());
                 } else {
@@ -924,12 +936,16 @@ impl Relayer {
         ),
         net_error,
     > {
+        let start = Utc::now();
+        println!("process_new_blocks开始: {:?}", start);
         let mut new_blocks = HashSet::new();
         let mut new_confirmed_microblocks = HashSet::new();
         let mut bad_neighbors = vec![];
 
         let tip_sort_id = SortitionDB::get_canonical_sortition_tip(sortdb.conn())?;
+        println!("process_new_blocks获取tip_sort_id: {:?}", tip_sort_id);
         let mut store_downloaded_blocks = true;
+        println!("process_new_blocks最初获取store_downloaded_blocks: {:?}", store_downloaded_blocks);
 
         {
             let sort_ic = sortdb.index_conn();
@@ -938,7 +954,9 @@ impl Relayer {
                 sortdb_reader.get_pox_id()?
             };
 
+            println!("process_new_blocks获取cur_pox_id: {:?}", cur_pox_id);
             if let Some(ref old_pox_id) = network_result.download_pox_id {
+                println!("process_new_blocks获取old_pox_id: {:?}", old_pox_id);
                 // optimistic concurrency control -- don't store downloaded blocks and microblocks if they correspond to a
                 // now-invalidated reward cycle.
                 let num_reward_cycles = cmp::min(old_pox_id.len(), cur_pox_id.len());
@@ -952,22 +970,31 @@ impl Relayer {
                     }
                 }
             }
+            println!("process_new_blocks修改后获取store_downloaded_blocks: {:?}", store_downloaded_blocks);
 
             if store_downloaded_blocks {
                 // process blocks we downloaded
+                let start = Utc::now();
+                println!("process_new_blocks开始Relayer::preprocess_downloaded_blocks: {:?}", start);
                 let mut new_dled_blocks =
                     Relayer::preprocess_downloaded_blocks(&sort_ic, network_result, chainstate);
                 for new_dled_block in new_dled_blocks.drain() {
                     new_blocks.insert(new_dled_block);
                 }
+                let end = Utc::now();
+                println!("process_new_blocks结束Relayer::preprocess_downloaded_blocks: {:?}", end - start);
             }
 
             // process blocks pushed to us
+            let start = Utc::now();
+            println!("process_new_blocks开始Relayer::preprocess_pushed_blocks: {:?}", start);
             let (mut new_pushed_blocks, mut new_bad_neighbors) =
                 Relayer::preprocess_pushed_blocks(&sort_ic, network_result, chainstate)?;
             for new_pushed_block in new_pushed_blocks.drain() {
                 new_blocks.insert(new_pushed_block);
             }
+            let end = Utc::now();
+            println!("process_new_blocks结束Relayer::preprocess_pushed_blocks: {:?}", end - start);
             bad_neighbors.append(&mut new_bad_neighbors);
         }
 
@@ -991,6 +1018,9 @@ impl Relayer {
                 }
             }
         }
+
+        let end = Utc::now();
+        println!("process_new_blocks结束: {:?}", end - start);
 
         Ok((
             new_blocks.into_iter().collect(),
@@ -1182,6 +1212,8 @@ impl Relayer {
         mempool: &mut MemPoolDB,
         coord_comms: Option<&CoordinatorChannels>,
     ) -> Result<ProcessedNetReceipts, net_error> {
+        let start = Utc::now();
+        println!("process_network_result方法开始: {:?}", start);
         match Relayer::process_new_blocks(network_result, sortdb, chainstate, coord_comms) {
             Ok((new_blocks, new_confirmed_microblocks, new_microblocks, bad_block_neighbors)) => {
                 // attempt to relay messages (note that this is all best-effort).
@@ -1276,7 +1308,8 @@ impl Relayer {
 
         // finally, refresh the unconfirmed chainstate, if need be
         Relayer::refresh_unconfirmed(chainstate, sortdb);
-
+        let end = Utc::now();
+        println!("process_network_result方法结束: {:?}", end - start);
         Ok(receipts)
     }
 }
@@ -1350,8 +1383,8 @@ impl PeerNetwork {
         wanted: &Vec<(ConsensusHash, BurnchainHeaderHash)>,
         mut msg_builder: S,
     ) -> ()
-    where
-        S: FnMut(BlocksAvailableData) -> StacksMessageType,
+        where
+            S: FnMut(BlocksAvailableData) -> StacksMessageType,
     {
         for i in (0..wanted.len()).step_by(BLOCKS_AVAILABLE_MAX_LEN as usize) {
             let to_send = if i + (BLOCKS_AVAILABLE_MAX_LEN as usize) < wanted.len() {
@@ -1440,8 +1473,8 @@ impl PeerNetwork {
         available: &BlocksAvailableMap,
         msg_builder: S,
     ) -> Result<(), net_error>
-    where
-        S: FnMut(BlocksAvailableData) -> StacksMessageType,
+        where
+            S: FnMut(BlocksAvailableData) -> StacksMessageType,
     {
         let mut wanted: Vec<(ConsensusHash, BurnchainHeaderHash)> = vec![];
         for (burn_header_hash, (_, consensus_hash)) in available.iter() {
@@ -1566,32 +1599,29 @@ impl PeerNetwork {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use chainstate::stacks::*;
+    use chainstate::stacks::*;
     use chainstate::stacks::db::blocks::MINIMUM_TX_FEE;
     use chainstate::stacks::db::blocks::MINIMUM_TX_FEE_RATE_PER_BYTE;
-    use chainstate::stacks::*;
+    use chainstate::stacks::test::*;
+    use net::*;
     use net::asn::*;
     use net::chat::*;
     use net::codec::*;
-    use net::download::test::run_get_blocks_and_microblocks;
     use net::download::*;
+    use net::download::test::run_get_blocks_and_microblocks;
     use net::http::*;
     use net::inv::*;
     use net::test::*;
-    use net::*;
-
     use std::cell::RefCell;
     use std::collections::HashMap;
-
-    use chainstate::stacks::test::*;
-    use chainstate::stacks::*;
-
+    use util::sleep_ms;
+    use util::test::*;
     use vm::clarity::ClarityConnection;
     use vm::costs::LimitedCostTracker;
     use vm::database::ClarityDatabase;
 
-    use util::sleep_ms;
-    use util::test::*;
+    use super::*;
 
     #[test]
     fn test_relayer_stats_add_relyed_messages() {
@@ -1869,7 +1899,7 @@ mod test {
             public_key: Secp256k1PublicKey::from_hex(
                 "0260569384baa726f877d47045931e5310383f18d0b243a9b6c095cee6ef19abd6",
             )
-            .unwrap(),
+                .unwrap(),
             expire_block: 4302,
             last_contact_time: 0,
             allowed: 0,
@@ -1885,7 +1915,7 @@ mod test {
             public_key: Secp256k1PublicKey::from_hex(
                 "02465f9ff58dfa8e844fec86fa5fc3fd59c75ea807e20d469b0a9f885d2891fbd4",
             )
-            .unwrap(),
+                .unwrap(),
             expire_block: 4302,
             last_contact_time: 0,
             allowed: 0,
@@ -1901,7 +1931,7 @@ mod test {
             public_key: Secp256k1PublicKey::from_hex(
                 "032d8a1ea2282c1514fdc1a6f21019561569d02a225cf7c14b4f803b0393cef031",
             )
-            .unwrap(),
+                .unwrap(),
             expire_block: 4302,
             last_contact_time: 0,
             allowed: 0,
@@ -1920,13 +1950,13 @@ mod test {
             &vec![asn1, asn2],
             &vec![n1.clone(), n2.clone(), n3.clone()],
         )
-        .unwrap();
+            .unwrap();
 
         let asn_count = RelayerStats::count_ASNs(
             peerdb.conn(),
             &vec![nk_1.clone(), nk_2.clone(), nk_3.clone()],
         )
-        .unwrap();
+            .unwrap();
         assert_eq!(asn_count.len(), 3);
         assert_eq!(*asn_count.get(&nk_1).unwrap(), 1);
         assert_eq!(*asn_count.get(&nk_2).unwrap(), 2);
@@ -1999,7 +2029,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -2016,7 +2046,7 @@ mod test {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         if peers[0]
                             .config
                             .burnchain
@@ -2043,7 +2073,7 @@ mod test {
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         block_data.push((
                             sn.consensus_hash.clone(),
                             Some(stacks_block),
@@ -2062,7 +2092,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -2223,8 +2253,8 @@ mod test {
             peer.sortdb.as_ref().unwrap().conn(),
             &consensus_hash,
         )
-        .unwrap()
-        .unwrap();
+            .unwrap()
+            .unwrap();
         let consensus_hash = sn.consensus_hash;
 
         let msg = StacksMessageType::Blocks(BlocksData {
@@ -2250,8 +2280,8 @@ mod test {
             peer.sortdb.as_ref().unwrap().conn(),
             &consensus_hash,
         )
-        .unwrap()
-        .unwrap();
+            .unwrap()
+            .unwrap();
         let consensus_hash = sn.consensus_hash;
 
         let msg = StacksMessageType::Blocks(BlocksData {
@@ -2381,7 +2411,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -2394,7 +2424,7 @@ mod test {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         if peers[0]
                             .config
                             .burnchain
@@ -2420,7 +2450,7 @@ mod test {
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         block_data.push((
                             sn.consensus_hash.clone(),
                             Some(stacks_block),
@@ -2603,7 +2633,7 @@ mod test {
                             &name.to_string(),
                             &contract.to_string(),
                         )
-                        .unwrap(),
+                            .unwrap(),
                     );
 
                     let chain_tip =
@@ -2718,7 +2748,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -2731,7 +2761,7 @@ mod test {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         if peers[0]
                             .config
                             .burnchain
@@ -2761,7 +2791,7 @@ mod test {
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         block_data.push((
                             sn.consensus_hash.clone(),
                             Some(stacks_block),
@@ -3007,26 +3037,26 @@ mod test {
             // peer 1 should have 1 tx per chain tip
             for ((consensus_hash, block, _), sent_tx) in
                 blocks_and_microblocks.iter().zip(expected_txs.iter())
-            {
-                let block_hash = block.block_hash();
-                let tx_infos = MemPoolDB::get_txs_after(
-                    peers[1].mempool.as_ref().unwrap().conn(),
-                    consensus_hash,
-                    &block_hash,
-                    0,
-                    1000,
-                )
-                .unwrap();
-                test_debug!(
+                {
+                    let block_hash = block.block_hash();
+                    let tx_infos = MemPoolDB::get_txs_after(
+                        peers[1].mempool.as_ref().unwrap().conn(),
+                        consensus_hash,
+                        &block_hash,
+                        0,
+                        1000,
+                    )
+                        .unwrap();
+                    test_debug!(
                     "Check {}/{} (height {}): expect {}",
                     &consensus_hash,
                     &block_hash,
                     block.header.total_work.work,
                     &sent_tx.txid()
                 );
-                assert_eq!(tx_infos.len(), 1);
-                assert_eq!(tx_infos[0].tx.txid(), sent_tx.txid());
-            }
+                    assert_eq!(tx_infos.len(), 1);
+                    assert_eq!(tx_infos[0].tx.txid(), sent_tx.txid());
+                }
         })
     }
 
@@ -3105,7 +3135,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -3118,7 +3148,7 @@ mod test {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         if peers[0]
                             .config
                             .burnchain
@@ -3144,7 +3174,7 @@ mod test {
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
 
                         block_data.push((
                             sn.consensus_hash.clone(),
@@ -3192,7 +3222,7 @@ mod test {
                                 if convo.is_authenticated() {
                                     if let Some(inv_state) = &peers[i].network.inv_state {
                                         if let Some(inv_stats) =
-                                            inv_state.block_stats.get(&peer_0_nk)
+                                        inv_state.block_stats.get(&peer_0_nk)
                                         {
                                             if inv_stats.inv.num_reward_cycles >= 5 {
                                                 connectivity_n_to_0
@@ -3231,7 +3261,7 @@ mod test {
                                         SortitionDB::get_canonical_stacks_chain_tip_hash(
                                             sortdb.conn(),
                                         )
-                                        .unwrap();
+                                            .unwrap();
 
                                     if canonical_consensus_hash != tip_consensus_hash
                                         || canonical_block_hash != tip_block.block_hash()
@@ -3363,19 +3393,19 @@ mod test {
                 // peers 1..n should have 1 tx per chain tip (except for the first block)
                 for ((consensus_hash, block, _), sent_tx) in
                     blocks_and_microblocks.iter().zip(expected_txs[1..].iter())
-                {
-                    let block_hash = block.block_hash();
-                    let tx_infos = MemPoolDB::get_txs_after(
-                        peers[i].mempool.as_ref().unwrap().conn(),
-                        consensus_hash,
-                        &block_hash,
-                        0,
-                        1000,
-                    )
-                    .unwrap();
-                    assert_eq!(tx_infos.len(), 1);
-                    assert_eq!(tx_infos[0].tx.txid(), sent_tx.txid());
-                }
+                    {
+                        let block_hash = block.block_hash();
+                        let tx_infos = MemPoolDB::get_txs_after(
+                            peers[i].mempool.as_ref().unwrap().conn(),
+                            consensus_hash,
+                            &block_hash,
+                            0,
+                            1000,
+                        )
+                            .unwrap();
+                        assert_eq!(tx_infos.len(), 1);
+                        assert_eq!(tx_infos[0].tx.txid(), sent_tx.txid());
+                    }
             }
         })
     }
@@ -3425,7 +3455,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -3438,7 +3468,7 @@ mod test {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         if peers[0]
                             .config
                             .burnchain
@@ -3464,7 +3494,7 @@ mod test {
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         block_data.push((
                             sn.consensus_hash.clone(),
                             Some(stacks_block),
@@ -3544,7 +3574,7 @@ mod test {
                     let tip = SortitionDB::get_canonical_burn_chain_tip(
                         &peers[0].sortdb.as_ref().unwrap().conn(),
                     )
-                    .unwrap();
+                        .unwrap();
                     let this_reward_cycle = peers[0]
                         .config
                         .burnchain
@@ -3557,7 +3587,7 @@ mod test {
                         let tip = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         let (mut burn_ops, stacks_block, microblocks) =
                             peers[0].make_default_tenure();
 
@@ -3580,7 +3610,7 @@ mod test {
                         let sn = SortitionDB::get_canonical_burn_chain_tip(
                             &peers[0].sortdb.as_ref().unwrap().conn(),
                         )
-                        .unwrap();
+                            .unwrap();
                         block_data.push((
                             sn.consensus_hash.clone(),
                             Some(stacks_block),

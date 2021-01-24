@@ -792,6 +792,7 @@ fn spawn_miner_relayer(
                     );
                     let start3 = Utc::now();
                     println!("spawn_miner_relayer方法开始ProcessTenure: {:?}", start3);
+                    println!("ProcessTenure信息: consensus_hash: {:?}, block_header_hash: {:?}, burn_hash: {:?}", &consensus_hash, &block_header_hash, &burn_hash);
                     // TODO 返回被删除的值
                     // TODO 获胜却不广播的出错方法
                     if let Some(last_mined_blocks_at_burn_hash) =
@@ -815,7 +816,7 @@ fn spawn_miner_relayer(
                                     debug!("Won sortition!";
                                       "stacks_header" => %block_header_hash,
                                       "burn_hash" => %mined_burn_hash,
-                                );
+                                    );
 
                                     increment_stx_blocks_mined_counter();
 
@@ -1286,6 +1287,7 @@ impl InitializedNeonNode {
         }
 
         // TODO 广播获胜区块信息1
+        println!("relayer_sortition_notify方法获取last_burn_block: {:?}", &self.last_burn_block);
         if let Some(ref snapshot) = &self.last_burn_block {
             if snapshot.sortition {
                 return self
@@ -1805,11 +1807,13 @@ impl InitializedNeonNode {
         let block_snapshot = SortitionDB::get_block_snapshot(&ic, sort_id)
             .expect("Failed to obtain block snapshot for processed burn block.")
             .expect("Failed to obtain block snapshot for processed burn block.");
+        println!("process_burnchain_state方法获取block_snapshot: block_snapshot: {:?}", block_snapshot);
         let block_height = block_snapshot.block_height;
 
         let block_commits =
             SortitionDB::get_block_commits_by_block(&ic, &block_snapshot.sortition_id)
                 .expect("Unexpected SortitionDB error fetching block commits");
+        println!("process_burnchain_state方法获取block_commits: block_commits: {:?}", block_commits);
 
         update_active_miners_count_gauge(block_commits.len() as i64);
 
@@ -1887,6 +1891,8 @@ impl InitializedNeonNode {
         // no-op on UserBurnSupport ops are not supported / produced at this point.
         // TODO 此处开始给last_burn_block赋值用于后续广播获胜交易
         self.last_burn_block = Some(block_snapshot);
+        let end = Utc::now();
+        println!("process_burnchain_state方法结束: {:?}", end - start);
 
         last_sortitioned_block.map(|x| x.0)
     }
