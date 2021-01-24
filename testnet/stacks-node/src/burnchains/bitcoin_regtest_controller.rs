@@ -5,7 +5,6 @@ use async_std::io::ReadExt;
 use async_std::net::TcpStream;
 use base64::encode;
 use chrono::Utc;
-use chrono::Utc;
 use http_types::{Method, Request, Url};
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -1226,7 +1225,8 @@ impl BurnchainController for BitcoinRegtestController {
         op_signer: &mut BurnchainOpSigner,
         attempt: u64,
     ) -> bool {
-        println!("submit_operation方法开始: {:?}",Utc::now());
+        let start = Utc::now();
+        println!("submit_operation方法开始: {:?}", start);
         let transaction = match operation {
             BlockstackOperationType::LeaderBlockCommit(payload) => {
                 self.build_leader_block_commit_tx(payload, op_signer, attempt)
@@ -1254,7 +1254,8 @@ impl BurnchainController for BitcoinRegtestController {
         };
 
         println!("进入发送交易");
-        println!("submit_operation方法结束: {:?}",Utc::now());
+        let end = Utc::now();
+        println!("submit_operation方法结束: {:?}", end - start);
         false
 //        self.send_transaction(transaction)
     }
