@@ -578,6 +578,7 @@ fn spawn_peer(
             let mut mblock_deadline = 0;
 
             while !disconnected {
+                println!("spawn_peer !disconnected loop 开始: {:?}",Utc::now());
                 let download_backpressure = results_with_data.len() > 0;
                 let poll_ms = if !download_backpressure && this.has_more_downloads() {
                     // keep getting those blocks -- drive the downloader state-machine
@@ -602,6 +603,7 @@ fn spawn_peer(
                 let _ = Relayer::setup_unconfirmed_state_readonly(&mut chainstate, &sortdb);
                 recv_unconfirmed_txs(&mut chainstate, unconfirmed_txs.clone());
 
+                println!("spawn_peer => !disconnected => p2p run开始: {:?}",Utc::now());
                 match this.run(
                     &sortdb,
                     &mut chainstate,
@@ -613,23 +615,24 @@ fn spawn_peer(
                     &mut expected_attachments,
                 ) {
                     Ok(network_result) => {
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_p2p_state_pass(): {:?}",Utc::now());
                         if num_p2p_state_machine_passes < network_result.num_state_machine_passes {
                             // p2p state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_p2p_state_pass();
                             num_p2p_state_machine_passes = network_result.num_state_machine_passes;
                         }
-
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_inv_sync_pass(): {:?}",Utc::now());
                         if num_inv_sync_passes < network_result.num_inv_sync_passes {
                             // inv-sync state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_inv_sync_pass();
                             num_inv_sync_passes = network_result.num_inv_sync_passes;
                         }
-
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理 push_back(RelayerDirective::HandleNetResult(network_result)): {:?}",Utc::now());
                         if network_result.has_data_to_store() {
                             results_with_data
                                 .push_back(RelayerDirective::HandleNetResult(network_result));
                         }
-
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处 results_with_data.push_back(RelayerDirective::RunMicroblockTenure);: {:?}",Utc::now());
                         // only do this on the Ok() path, even if we're mining, because an error in
                         // network dispatching is likely due to resource exhaustion
                         if mblock_deadline < get_epoch_time_ms() {
@@ -637,6 +640,7 @@ fn spawn_peer(
                             mblock_deadline =
                                 get_epoch_time_ms() + (config.node.microblock_frequency as u128);
                         }
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}",Utc::now());
                     }
                     Err(e) => {
                         error!("P2P: Failed to process network dispatch: {:?}", &e);
@@ -645,15 +649,17 @@ fn spawn_peer(
                         }
                     }
                 };
-
+                println!("spawn_peer => !disconnected => results_with_data.pop_front()开始: {:?}",Utc::now());
                 while let Some(next_result) = results_with_data.pop_front() {
                     // have blocks, microblocks, and/or transactions (don't care about anything else),
                     // or a directive to mine microblocks
+                    println!("spawn_peer => !disconnected => relay_channel.try_send(next_result)开始: {:?}",Utc::now());
                     if let Err(e) = relay_channel.try_send(next_result) {
                         debug!(
                             "P2P: {:?}: download backpressure detected",
                             &this.local_peer
                         );
+                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch失败: {:?}",Utc::now());
                         match e {
                             TrySendError::Full(directive) => {
                                 if let RelayerDirective::RunMicroblockTenure = directive {
@@ -671,10 +677,12 @@ fn spawn_peer(
                             }
                         }
                     } else {
+                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch成功: {:?}",Utc::now());
                         debug!("P2P: Dispatched result to Relayer!");
                     }
                 }
             }
+            println!("P2P 进程退出!: {:?}",Utc::now());
             debug!("P2P thread exit!");
         })
         .unwrap();
@@ -737,6 +745,7 @@ fn spawn_miner_relayer(
     let mut last_microblock_tenure_time = 0;
 
     let _relayer_handle = thread::Builder::new().name("relayer".to_string()).spawn(move || {
+        println!("_relayer_handle 开始 while 循环: {:?}",Utc::now());
         while let Ok(mut directive) = relay_channel.recv() {
             match directive {
                 RelayerDirective::HandleNetResult(ref mut net_result) => {
