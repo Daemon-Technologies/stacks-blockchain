@@ -86,6 +86,9 @@ async fn main() -> http_types::Result<()> {
         while is_chain_bootstrap_required(&config).await? {
             println!("Waiting on initial blocks to be available");
             let backoff = Duration::from_millis(1_000);
+            //sleep Gavin3
+            println!("sleep Gavin3");
+            println!("bind_address 方法进入 {:?} 秒睡眠", backoff);
             sleep(backoff)
         }
     }
@@ -101,6 +104,9 @@ async fn main() -> http_types::Result<()> {
             async_std::task::block_on(async {
                 generate_blocks(1, miner_address.clone(), &conf).await;
             });
+            //sleep Gavin 4
+            println!("sleep Gavin4");
+            println!("bind_address 方法进入 {:?} 秒睡眠", backoff);
             thread::sleep(block_time);
             num_blocks += 1;
         }
@@ -210,6 +216,9 @@ async fn is_chain_bootstrap_required(config: &ConfigFile) -> http_types::Result<
                     "Error while trying to connect to {}: {:?}",
                     config.neon.bitcoind_rpc_host, e
                 );
+                //sleep Gavin5
+                println!("sleep Gavin3");
+                println!("is_chain_bootstrap_required 方法进入 {:?} 秒睡眠", duration);
                 sleep(duration);
                 continue;
             }
@@ -224,6 +233,9 @@ async fn is_chain_bootstrap_required(config: &ConfigFile) -> http_types::Result<
             }
             Err(e) => {
                 println!("Error: {:?}", e);
+                //sleep Gavin6
+                println!("sleep Gavin6");
+                println!("bind_address 方法进入 {:?} 秒睡眠", duration);
                 sleep(duration);
             }
         };

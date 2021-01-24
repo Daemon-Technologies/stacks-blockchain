@@ -169,6 +169,7 @@ fn spawn_peer(
                 Ok(x) => x,
                 Err(e) => {
                     warn!("Error while connecting burnchain db in peer loop: {}", e);
+                    // sleep Gavin 9 一秒
                     thread::sleep(time::Duration::from_secs(1));
                     continue;
                 }
@@ -178,6 +179,7 @@ fn spawn_peer(
                     Ok(x) => x,
                     Err(e) => {
                         warn!("Error while connecting chainstate db in peer loop: {}", e);
+                        // sleep Gavin 10 一秒
                         thread::sleep(time::Duration::from_secs(1));
                         continue;
                     }
@@ -188,6 +190,7 @@ fn spawn_peer(
                 Ok(x) => x,
                 Err(e) => {
                     warn!("Error while connecting to mempool db in peer loop: {}", e);
+                    // sleep Gavin 11 一秒
                     thread::sleep(time::Duration::from_secs(1));
                     continue;
                 }

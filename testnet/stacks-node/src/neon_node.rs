@@ -1232,17 +1232,23 @@ impl InitializedNeonNode {
                     // sleep a little before building the anchor block, to give any broadcasted
                     //   microblocks time to propagate.
                     let start1 = Utc::now();
+                    println!("Gavin 睡眠1");
                     println!("relayer_issue_tenure方法开始进入Active并进入睡眠: {:?}", start1);
                     thread::sleep(std::time::Duration::from_millis(self.sleep_before_tenure));
                     let end1 = Utc::now();
                     println!("relayer_issue_tenure方法开始进入Active并退出睡眠: {:?}", end1 - start1);
+                    let start2 = Utc::now();
+                    println!("relayer_issue_tenure方法开始send RunTenure: {:?}",start2);
+                    let r = self.relay_channel
+                        .send(RelayerDirective::RunTenure(key.clone(), burnchain_tip))
+                        .is_ok();
+                    let end2 = Utc::now();
+                    println!("relayer_issue_tenure方法结束send RunTenure: {:?}",end2 - start2);
                     let end = Utc::now();
                     println!("relayer_issue_tenure方法结束Active: {:?}", end - start);
                     let end1 = Utc::now();
                     println!("relayer_issue_tenure方法结束: {:?}",end1 - start1);
-                    self.relay_channel
-                        .send(RelayerDirective::RunTenure(key.clone(), burnchain_tip))
-                        .is_ok()
+                    r
                 }
                 LeaderKeyRegistrationState::Pending => true,
             }
