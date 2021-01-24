@@ -1514,7 +1514,7 @@ impl StacksChainState {
                 1
             }
         };
-
+        println!("插入staging blocks, 高度为: {:?}", &u64_to_sql(block.header.total_work.work)?);
         // store block metadata
         let sql = "INSERT OR REPLACE INTO staging_blocks \
                    (anchored_block_hash, \

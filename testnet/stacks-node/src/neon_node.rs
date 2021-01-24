@@ -620,7 +620,11 @@ fn spawn_peer(
                     &mut expected_attachments,
                 ) {
                     Ok(network_result) => {
-                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处理 sync_comms.notify_p2p_state_pass(): {:?}", Utc::now());
+                        
+                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}", Utc::now());
+                        println!("新收到的network_result分析: has_blocks(): {:?} has_microblocks(): {:?}has_transactions(): {:?} has_attachments(): {:?}", 
+                            network_result.has_blocks(), network_result.has_microblocks(), network_result.has_transactions(), network_result.has_attachments());
+                        
                         if num_p2p_state_machine_passes < network_result.num_state_machine_passes {
                             // p2p state-machine did a full pass. Notify anyone listening.
                             sync_comms.notify_p2p_state_pass();
@@ -1018,7 +1022,7 @@ impl InitializedNeonNode {
         atlas_config: AtlasConfig,
     ) -> InitializedNeonNode {
         // we can call _open_ here rather than _connect_, since connect is first called in
-        //   make_genesis_block
+        // make_genesis_block
         let sortdb = SortitionDB::open(&config.get_burn_db_file_path(), false)
             .expect("Error while instantiating sortition db");
 
