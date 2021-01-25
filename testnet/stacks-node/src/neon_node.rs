@@ -583,7 +583,7 @@ fn spawn_peer(
             let mut mblock_deadline = 0;
 
             while !disconnected {
-                println!("spawn_peer !disconnected loop 开始: {:?}", Utc::now());
+                //println!("spawn_peer !disconnected loop 开始: {:?}", Utc::now());
                 let download_backpressure = results_with_data.len() > 0;
                 let poll_ms = if !download_backpressure && this.has_more_downloads() {
                     // keep getting those blocks -- drive the downloader state-machine
@@ -608,7 +608,7 @@ fn spawn_peer(
                 let _ = Relayer::setup_unconfirmed_state_readonly(&mut chainstate, &sortdb);
                 recv_unconfirmed_txs(&mut chainstate, unconfirmed_txs.clone());
 
-                println!("spawn_peer => !disconnected => p2p run开始: {:?}", Utc::now());
+                //println!("spawn_peer => !disconnected => p2p run开始: {:?}", Utc::now());
                 match this.run(
                     &sortdb,
                     &mut chainstate,
@@ -621,7 +621,7 @@ fn spawn_peer(
                 ) {
                     Ok(network_result) => {
                         
-                        println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => p2p run获得结果开始处理: {:?}", Utc::now());
                         println!("新收到的network_result分析: has_blocks(): {:?} has_microblocks(): {:?}has_transactions(): {:?} has_attachments(): {:?}", 
                             network_result.has_blocks(), network_result.has_microblocks(), network_result.has_transactions(), network_result.has_attachments());
                         
@@ -658,17 +658,17 @@ fn spawn_peer(
                         }
                     }
                 };
-                println!("spawn_peer => !disconnected => results_with_data.pop_front()开始: {:?}", Utc::now());
+                //println!("spawn_peer => !disconnected => results_with_data.pop_front()开始: {:?}", Utc::now());
                 while let Some(next_result) = results_with_data.pop_front() {
                     // have blocks, microblocks, and/or transactions (don't care about anything else),
                     // or a directive to mine microblocks
-                    println!("spawn_peer => !disconnected => relay_channel.try_send(next_result)开始: {:?}", Utc::now());
+                    //println!("spawn_peer => !disconnected => relay_channel.try_send(next_result)开始: {:?}", Utc::now());
                     if let Err(e) = relay_channel.try_send(next_result) {
                         debug!(
                             "P2P: {:?}: download backpressure detected",
                             &this.local_peer
                         );
-                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch失败: {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch失败: {:?}", Utc::now());
                         match e {
                             TrySendError::Full(directive) => {
                                 if let RelayerDirective::RunMicroblockTenure = directive {
@@ -686,7 +686,7 @@ fn spawn_peer(
                             }
                         }
                     } else {
-                        println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch成功: {:?}", Utc::now());
+                        //println!("spawn_peer => !disconnected => relay_channel.try_send(next_result) dipatch成功: {:?}", Utc::now());
                         debug!("P2P: Dispatched result to Relayer!");
                     }
                 }
@@ -1528,11 +1528,11 @@ impl InitializedNeonNode {
             best_attempt + 1
         };
         let end1 = Utc::now();
-        println!("relayer_run_tenure方法结束get_stacks_chain_tip: {:?}", start1 - end1);
+        //println!("relayer_run_tenure方法结束get_stacks_chain_tip: {:?}", start1 - end1);
 
         // Generates a proof out of the sortition hash provided in the params.
         let start2 = Utc::now();
-        println!("relayer_run_tenure方法开始generate_proof: {:?}", start2);
+        //println!("relayer_run_tenure方法开始generate_proof: {:?}", start2);
         let vrf_proof = match keychain.generate_proof(
             &registered_key.vrf_public_key,
             burn_block.sortition_hash.as_bytes(),
@@ -1560,7 +1560,7 @@ impl InitializedNeonNode {
             }
         };
         let end2 = Utc::now();
-        println!("relayer_run_tenure方法结束generate_proof: {:?}", end2 - start2);
+        //println!("relayer_run_tenure方法结束generate_proof: {:?}", end2 - start2);
 
         debug!(
             "Generated VRF Proof: {} over {} with key {}",
@@ -1588,7 +1588,7 @@ impl InitializedNeonNode {
         let mblock_pubkey_hash =
             Hash160::from_node_public_key(&StacksPublicKey::from_private(&microblock_secret_key));
         let start3 = Utc::now();
-        println!("relayer_run_tenure方法开始inner_generate_coinbase_tx: {:?}", start3);
+        //println!("relayer_run_tenure方法开始inner_generate_coinbase_tx: {:?}", start3);
         let coinbase_tx = inner_generate_coinbase_tx(
             keychain,
             coinbase_nonce,
@@ -1596,11 +1596,11 @@ impl InitializedNeonNode {
             config.burnchain.chain_id,
         );
         let end3 = Utc::now();
-        println!("relayer_run_tenure方法结束inner_generate_coinbase_tx: {:?}", end3 - start3);
+        //println!("relayer_run_tenure方法结束inner_generate_coinbase_tx: {:?}", end3 - start3);
 
         // find the longest microblock tail we can build off of
         let start4 = Utc::now();
-        println!("relayer_run_tenure方法开始microblock_info_opt: {:?}", start4);
+        //println!("relayer_run_tenure方法开始microblock_info_opt: {:?}", start4);
         let microblock_info_opt =
             match StacksChainState::load_descendant_staging_microblock_stream_with_poison(
                 chain_state.db(),
@@ -1632,7 +1632,7 @@ impl InitializedNeonNode {
                 }
             };
         let end4 = Utc::now();
-        println!("relayer_run_tenure方法结束microblock_info_opt: {:?}", end4 - start4);
+        //println!("relayer_run_tenure方法结束microblock_info_opt: {:?}", end4 - start4);
 
         if let Some((microblocks, poison_opt)) = microblock_info_opt {
             if let Some(ref tail) = microblocks.last() {
