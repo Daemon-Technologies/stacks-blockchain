@@ -386,8 +386,9 @@ impl PoxSyncWatchdog {
         if burnchain_tip.block_snapshot.block_height
             < burnchain.first_block_height + (burnchain.pox_constants.reward_cycle_length as u64)
         {
+            println!("pox_sync_wait方法等待1");
             debug!("PoX watchdog in first reward cycle -- sync immediately");
-            sleep_ms(3_000);
+//            sleep_ms(3_000);
             return PoxSyncWatchdog::infer_initial_burnchain_block_download(
                 burnchain,
                 burnchain_tip,
@@ -408,6 +409,7 @@ impl PoxSyncWatchdog {
             // burnchain has advanced since the last call
             self.last_burnchain_height = burnchain_height;
             debug!("PoX watchdog: Wait for at least one inventory state-machine pass...");
+            println!("pox_sync_wait方法等待2");
             self.relayer_comms.wait_for_inv_sync_pass(3600); // wait an hour at most
             waited = true;
         }
@@ -422,6 +424,7 @@ impl PoxSyncWatchdog {
                     "PoX watchdog in last reward cycle -- sync after {} seconds",
                     self.steady_state_burnchain_sync_interval
                 );
+                println!("pox_sync_wait方法等待3");
                 sleep_ms(1000 * self.steady_state_burnchain_sync_interval);
             }
             return PoxSyncWatchdog::infer_initial_burnchain_block_download(
@@ -475,6 +478,7 @@ impl PoxSyncWatchdog {
                                 &self.max_samples
                             );
                         }
+                        println!("pox_sync_wait方法等待4");
                         sleep_ms(PER_SAMPLE_WAIT_MS);
                         continue;
                     }
@@ -484,6 +488,7 @@ impl PoxSyncWatchdog {
                     {
                         // still waiting for that first block in this reward cycle
                         debug!("PoX watchdog: Still warming up: waiting until {}s for first Stacks block download (estimated download time: {}s)...", expected_first_block_deadline, self.estimated_block_download_time);
+                        println!("pox_sync_wait方法等待5");
                         sleep_ms(PER_SAMPLE_WAIT_MS);
                         continue;
                     }
@@ -531,6 +536,7 @@ impl PoxSyncWatchdog {
                     {
                         debug!("PoX watchdog: Still processing blocks; waiting until at least min({},{})s before burnchain synchronization (estimated block-processing time: {}s)", 
                                get_epoch_time_secs() + 1, expected_last_block_deadline, self.estimated_block_process_time);
+                        println!("pox_sync_wait方法等待6");
                         sleep_ms(PER_SAMPLE_WAIT_MS);
                         continue;
                     }
@@ -543,6 +549,7 @@ impl PoxSyncWatchdog {
                                flat_attachable, flat_processed, &attachable_deviants, &processed_deviants);
 
                         if !flat_attachable || !flat_processed {
+                            println!("pox_sync_wait方法等待7");
                             sleep_ms(PER_SAMPLE_WAIT_MS);
                             continue;
                         }
