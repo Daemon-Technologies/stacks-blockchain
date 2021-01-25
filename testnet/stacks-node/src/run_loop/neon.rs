@@ -1,3 +1,5 @@
+extern crate ureq;
+
 use chrono::Utc;
 
 use stacks::burnchains::{Address, Burnchain};
@@ -350,7 +352,29 @@ impl RunLoop {
             let sortition_tip = &burnchain_tip.block_snapshot.sortition_id;
             let next_height = burnchain_tip.block_snapshot.block_height;
             println!("start方法进入next_height > block_height之前: next_height: {:?}, block_height: {:?}", next_height, block_height);
-            if next_height > block_height {
+            // 拦截miner，必须满足stagedb同步完成才能执行Miner相关方法
+//            loop {
+//                let response = ureq::get("http://localhost:8889/isStagedbSynced").call();
+//                match response {
+//                    Ok(mut resp) => {
+//                        let text = resp.into_string().unwrap();
+//                        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+//                        println!("获取snapshot聚合数据: {:?}", text);
+//                        let status = v["status"].as_i64().unwrap();
+//                        if status == 200 {
+//                            let mut block_height = v["block_height"].as_u64().unwrap();
+//                            break;
+//                        } else {
+//                            println!("状态异常，返回状态为: {:?}", status);
+//                        }
+//                    }
+//                    Err(err) => {
+//                        println!("获取isStagedbSynced请求异常: {:?}", err);
+//                    }
+//                }
+//            }
+
+            if next_height >= block_height {
                 let start = Utc::now();
                 println!("start方法开始进入next_height>block_height: {:?}", start);
                 // first, let's process all blocks in (block_height, next_height]
@@ -382,7 +406,7 @@ impl RunLoop {
                     // _this will block if the relayer's buffer is full_
                     // TODO 广播获胜信息入口
                     println!("block_to_porcess开始node.relayer_sortition_notify(): {:?}", Utc::now());
-                    if !node.relayer_sortition_notify() {
+                   if !node.relayer_sortition_notify() {
                         // relayer hung up, exit.
                         error!("Block relayer and miner hung up, exiting.");
                         return;
