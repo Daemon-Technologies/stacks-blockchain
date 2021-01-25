@@ -380,7 +380,7 @@ impl RunLoop {
                 // first, let's process all blocks in (block_height, next_height]
                 let start1 = Utc::now();
                 println!("start方法开始block_to_porcess: {:?}", start1);
-                for block_to_process in (block_height + 1)..(next_height + 1) {
+                for block_to_process in block_height..(next_height + 1) {
                     println!("start方法进入block_to_porcess: {:?}", Utc::now());
                     let block = {
                         let ic = burnchain.sortdb_ref().index_conn();
