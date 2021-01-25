@@ -1256,8 +1256,8 @@ impl BurnchainController for BitcoinRegtestController {
         println!("进入发送交易");
         let end = Utc::now();
         println!("submit_operation方法结束: {:?}", end - start);
-        false
-//        self.send_transaction(transaction)
+//        false
+        self.send_transaction(transaction)
     }
 
     #[cfg(test)]
